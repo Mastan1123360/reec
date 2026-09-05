@@ -1,0 +1,6 @@
+{
+  "name": "REEC Academy",
+  "description": "An interactive learning engine that renders engineering curriculum markdown into rich educational experiences with live Rust execution.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

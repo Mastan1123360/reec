@@ -1,0 +1,12 @@
+node_modules
+.next
+out
+.env*.local
+.DS_Store
+*.tsbuildinfo
+next-env.d.ts
+
+# Local npm cache/logs
+.npm-cache/
+.npm-logs/
+package-lock.json
