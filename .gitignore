@@ -1,0 +1,13 @@
+node_modules/
+.next/
+.next-dev/
+.env
+.env.local
+dist/
+
+node_modules/
+.next/
+.next-dev/
+.env
+.env.local
+dist/
