@@ -59,8 +59,10 @@ export interface SupabaseAuthUserLike {
  */
 export function resolveInstantProfile(user: SupabaseAuthUserLike): UserProfile {
   const userId = user.id;
-  const meta = user.user_metadata || {};
-  const email = user.email || null;
+  const meta = user.user_metadata || (user as any)?.raw_user_meta_data || {};
+  const identities = user.identities || [];
+  const idData = identities[0]?.identity_data || {};
+  const email = user.email || meta.email || idData.email || null;
 
   // --------------------------------------------------------------------------
   // 1. displayName Priority
@@ -68,14 +70,30 @@ export function resolveInstantProfile(user: SupabaseAuthUserLike): UserProfile {
   let resolvedDisplayName: string | null = null;
   if (isNonEmptyString(meta.full_name)) {
     resolvedDisplayName = meta.full_name.trim();
+  } else if (isNonEmptyString(idData.full_name)) {
+    resolvedDisplayName = idData.full_name.trim();
   } else if (isNonEmptyString(meta.name)) {
     resolvedDisplayName = meta.name.trim();
+  } else if (isNonEmptyString(idData.name)) {
+    resolvedDisplayName = idData.name.trim();
   } else if (isNonEmptyString(meta.display_name)) {
     resolvedDisplayName = meta.display_name.trim();
+  } else if (isNonEmptyString(idData.display_name)) {
+    resolvedDisplayName = idData.display_name.trim();
+  } else if (isNonEmptyString(meta.given_name)) {
+    resolvedDisplayName = `${meta.given_name} ${meta.family_name || ""}`.trim();
+  } else if (isNonEmptyString(idData.given_name)) {
+    resolvedDisplayName = `${idData.given_name} ${idData.family_name || ""}`.trim();
   } else if (isNonEmptyString(meta.user_name)) {
     resolvedDisplayName = meta.user_name.trim();
+  } else if (isNonEmptyString(idData.user_name)) {
+    resolvedDisplayName = idData.user_name.trim();
   } else if (isNonEmptyString(meta.preferred_username)) {
     resolvedDisplayName = meta.preferred_username.trim();
+  } else if (isNonEmptyString(idData.preferred_username)) {
+    resolvedDisplayName = idData.preferred_username.trim();
+  } else if (isNonEmptyString(idData.login)) {
+    resolvedDisplayName = idData.login.trim();
   } else if (typeof window !== "undefined" && userId) {
     try {
       const cached = window.localStorage.getItem(`reec_display_name_${userId}`);
@@ -88,7 +106,12 @@ export function resolveInstantProfile(user: SupabaseAuthUserLike): UserProfile {
   if (!resolvedDisplayName && email && email.includes("@")) {
     const emailPrefix = email.split("@")[0].trim();
     if (emailPrefix) {
-      resolvedDisplayName = emailPrefix;
+      // Capitalize nicely: e.g. "alex.miller" -> "Alex Miller"
+      const formatted = emailPrefix
+        .split(/[._-]/)
+        .map((s) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase())
+        .join(" ");
+      resolvedDisplayName = formatted || emailPrefix;
     }
   }
 
@@ -123,8 +146,14 @@ export function resolveInstantProfile(user: SupabaseAuthUserLike): UserProfile {
   if (!resolvedUsername) {
     if (isNonEmptyString(meta.user_name)) {
       resolvedUsername = normalizeUsername(meta.user_name);
+    } else if (isNonEmptyString(idData.user_name)) {
+      resolvedUsername = normalizeUsername(idData.user_name);
     } else if (isNonEmptyString(meta.preferred_username)) {
       resolvedUsername = normalizeUsername(meta.preferred_username);
+    } else if (isNonEmptyString(idData.preferred_username)) {
+      resolvedUsername = normalizeUsername(idData.preferred_username);
+    } else if (isNonEmptyString(idData.login)) {
+      resolvedUsername = normalizeUsername(idData.login);
     }
   }
 
@@ -145,6 +174,8 @@ export function resolveInstantProfile(user: SupabaseAuthUserLike): UserProfile {
   let resolvedAvatarId: string | null = null;
   if (isNonEmptyString(meta.avatar_id)) {
     resolvedAvatarId = resolveAvatarId(meta.avatar_id);
+  } else if (isNonEmptyString(idData.avatar_id)) {
+    resolvedAvatarId = resolveAvatarId(idData.avatar_id);
   } else if (typeof window !== "undefined" && userId) {
     try {
       const cached = window.localStorage.getItem(`reec_avatar_id_${userId}`);
@@ -173,6 +204,8 @@ export function resolveInstantProfile(user: SupabaseAuthUserLike): UserProfile {
   let resolvedGender: "male" | "female" | null = null;
   if (meta.gender === "male" || meta.gender === "female") {
     resolvedGender = meta.gender;
+  } else if (idData.gender === "male" || idData.gender === "female") {
+    resolvedGender = idData.gender;
   } else if (typeof window !== "undefined" && userId) {
     try {
       const cached = window.localStorage.getItem(`reec_gender_${userId}`);
@@ -221,7 +254,12 @@ export function resolveInstantProfile(user: SupabaseAuthUserLike): UserProfile {
     avatarId: resolvedAvatarId,
     gender: resolvedGender,
     coins: typeof meta.coins === "number" ? meta.coins : null,
-    lastUsernameChangedAt: meta.last_username_change_at || null,
+    lastUsernameChangedAt:
+      meta.last_username_change_at ||
+      (typeof window !== "undefined" && user?.id
+        ? window.localStorage.getItem(`reec_last_username_change_at_${user.id}`)
+        : null) ||
+      null,
     createdAt: user_metadata_created_at(user),
     updatedAt: new Date().toISOString(),
   };
@@ -269,7 +307,11 @@ export function reconcileProfileWithDatabase(
     typeof dbData.coins === "number" ? dbData.coins : currentProfile.coins;
 
   const resolvedLastChanged =
-    dbData.lastUsernameChangedAt || currentProfile.lastUsernameChangedAt;
+    dbData.lastUsernameChangedAt ||
+    currentProfile.lastUsernameChangedAt ||
+    (typeof window !== "undefined" && currentProfile.id
+      ? window.localStorage.getItem(`reec_last_username_change_at_${currentProfile.id}`)
+      : null);
 
   const updated: UserProfile = {
     ...currentProfile,
@@ -300,6 +342,9 @@ export function reconcileProfileWithDatabase(
       if (updated.gender) {
         window.localStorage.setItem(`reec_gender_${uid}`, updated.gender);
       }
+      if (updated.lastUsernameChangedAt) {
+        window.localStorage.setItem(`reec_last_username_change_at_${uid}`, updated.lastUsernameChangedAt);
+      }
     } catch {}
   }
 
@@ -316,6 +361,7 @@ export function setPerUserProfileCache(
     username?: string;
     avatarId?: string;
     gender?: "male" | "female";
+    lastUsernameChangedAt?: string;
   }
 ) {
   if (typeof window === "undefined" || !userId) return;
@@ -333,6 +379,9 @@ export function setPerUserProfileCache(
     }
     if (updates.gender) {
       window.localStorage.setItem(`reec_gender_${userId}`, updates.gender);
+    }
+    if (updates.lastUsernameChangedAt) {
+      window.localStorage.setItem(`reec_last_username_change_at_${userId}`, updates.lastUsernameChangedAt);
     }
   } catch {}
 }

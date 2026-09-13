@@ -134,7 +134,7 @@ export function StudySessionModal({ open, onClose }: StudySessionModalProps) {
             </div>
             <div className="text-right">
               <div className="text-xl font-bold font-mono text-slate-900 dark:text-white">
-                {getTodayMinutes ? getTodayMinutes() : 0}m
+                {Math.round(getTodayMinutes ? getTodayMinutes() : 0)}m
               </div>
               <span className="text-xs text-slate-500 dark:text-slate-400">Total today</span>
             </div>

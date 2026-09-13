@@ -19,6 +19,8 @@ import { StudySessionModal } from "./StudySessionModal";
 import type { DashboardPhase } from "./types";
 import { cn } from "@/lib/utils";
 
+import { formatStudyTimeShort } from "@/lib/utils/time";
+
 interface StatsSectionProps {
   phases: DashboardPhase[];
 }
@@ -48,7 +50,7 @@ export function StatsSection({ phases }: StatsSectionProps) {
 
   // Study time formatted
   const totalMins = mounted ? Math.round(studyTimeMinutes || 0) : 0;
-  const hoursFormatted = totalMins >= 60 ? `${(totalMins / 60).toFixed(1)}h` : `${totalMins}m`;
+  const hoursFormatted = formatStudyTimeShort(totalMins);
 
   const streak = mounted
     ? getStreak()

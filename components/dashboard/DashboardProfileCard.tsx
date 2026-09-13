@@ -18,6 +18,7 @@ import { useAuth } from "@/lib/supabase/auth-context";
 import { useUserAvatar } from "@/lib/avatars";
 import { useProgressStore } from "@/lib/progress/store";
 import { calculateRankFromLessons } from "@/lib/badges";
+import { formatStudyTime } from "@/lib/utils/time";
 import { cn } from "@/lib/utils";
 
 interface DashboardProfileCardProps {
@@ -47,14 +48,6 @@ export function DashboardProfileCard({
 
   const effectiveDisplayName = profile?.displayName || "Learner";
   const userHandle = profile?.username || (user?.email ? user.email.split("@")[0] : "guest");
-
-  const formatStudyTime = (minutes: number) => {
-    const totalMins = Math.floor(Math.max(0, minutes || 0));
-    if (totalMins < 60) return `${totalMins}m`;
-    const hrs = Math.floor(totalMins / 60);
-    const remMins = totalMins % 60;
-    return remMins > 0 ? `${hrs}h ${remMins}m` : `${hrs}h`;
-  };
 
   // =========================================================================
   // Horizontal / Compact layout for Mobile and Tablet (< lg)

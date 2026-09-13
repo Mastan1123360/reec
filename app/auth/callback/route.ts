@@ -252,6 +252,25 @@ export async function GET(request: NextRequest) {
             localStorage.setItem(storageKey, serialized);
             localStorage.setItem("sb-auth-token", serialized);
             localStorage.setItem("reec_oauth_session", serialized);
+
+            // Pre-seed per-user profile cache so the target page renders all profile details with 0ms delay
+            var u = finalSession.user;
+            if (u && u.id) {
+              var meta = u.user_metadata || {};
+              var idData = (u.identities && u.identities[0] && u.identities[0].identity_data) || {};
+              var dName = meta.full_name || meta.name || meta.display_name || idData.full_name || idData.name || (meta.given_name ? (meta.given_name + " " + (meta.family_name || "")).trim() : null) || (u.email ? u.email.split("@")[0] : "Learner");
+              var uName = meta.username || meta.user_name || meta.preferred_username || idData.user_name || idData.preferred_username || idData.login || (u.email ? u.email.split("@")[0].replace(/[^a-zA-Z0-9_]/g, "") : "learner");
+              var avId = meta.avatar_id || idData.avatar_id || "human-male-alex";
+              var gen = (meta.gender === "female" || idData.gender === "female") ? "female" : "male";
+
+              localStorage.setItem("reec_display_name_" + u.id, dName);
+              localStorage.setItem("reec_username_" + u.id, uName);
+              localStorage.setItem("reec_avatar_id_" + u.id, avId);
+              localStorage.setItem("reec_gender_" + u.id, gen);
+              localStorage.setItem("reec_persisted_username", uName);
+              localStorage.setItem("reec_selected_avatar", avId);
+              localStorage.setItem("reec_selected_gender", gen);
+            }
           } catch (e) {
             console.warn("[Auth Callback] LocalStorage write warning:", e);
           }

@@ -87,29 +87,47 @@ export function ProfileDetailsModal({ isOpen, onClose }: ProfileDetailsModalProp
     setMounted(true);
   }, []);
 
+  const meta = (user?.user_metadata || {}) as Record<string, any>;
+  const idData = (user?.identities?.[0]?.identity_data || {}) as Record<string, any>;
+
+  const effectiveDisplayName =
+    profile?.displayName ||
+    meta.full_name ||
+    meta.name ||
+    meta.display_name ||
+    idData.full_name ||
+    idData.name ||
+    (meta.given_name ? `${meta.given_name} ${meta.family_name || ""}`.trim() : null) ||
+    (idData.given_name ? `${idData.given_name} ${idData.family_name || ""}`.trim() : null) ||
+    meta.user_name ||
+    idData.user_name ||
+    (user?.email ? user.email.split("@")[0] : null) ||
+    "Learner";
+
+  const userHandle =
+    profile?.username ||
+    username ||
+    meta.username ||
+    meta.user_name ||
+    meta.preferred_username ||
+    idData.user_name ||
+    idData.preferred_username ||
+    idData.login ||
+    (user?.email ? user.email.split("@")[0].replace(/[^a-zA-Z0-9_]/g, "") : null) ||
+    "learner";
+
   // Tab state: "overview" (Snapchat profile feed) or "customize" (Dedicated customization section)
   const [activeTab, setActiveTab] = useState<"overview" | "customize">("overview");
 
   // Editing state for Display Name
   const [isEditingDisplayName, setIsEditingDisplayName] = useState(false);
-  const [displayNameInput, setDisplayNameInput] = useState(
-    profile?.displayName || ""
-  );
+  const [displayNameInput, setDisplayNameInput] = useState(effectiveDisplayName);
   const [isSavingDisplayName, setIsSavingDisplayName] = useState(false);
   const [displayNameSuccess, setDisplayNameSuccess] = useState(false);
 
-  // Sync displayNameInput when profile updates
-  useEffect(() => {
-    if (!isEditingDisplayName) {
-      setDisplayNameInput(profile?.displayName || "");
-    }
-  }, [profile?.displayName, isEditingDisplayName]);
-
   // Editing state for Username
   const [isEditingUsername, setIsEditingUsername] = useState(false);
-  const [usernameInput, setUsernameInput] = useState(
-    profile?.username || ""
-  );
+  const [usernameInput, setUsernameInput] = useState(userHandle);
   const [isSavingUsername, setIsSavingUsername] = useState(false);
   const [usernameError, setUsernameError] = useState<string | null>(null);
   const [usernameSuccess, setUsernameSuccess] = useState(false);
@@ -134,20 +152,16 @@ export function ProfileDetailsModal({ isOpen, onClose }: ProfileDetailsModalProp
   const unlockedCount = evaluatedBadges.filter((b) => b.unlocked).length;
 
   useEffect(() => {
-    if (profile?.displayName) {
-      setDisplayNameInput(profile.displayName);
-    } else if (user?.user_metadata?.display_name) {
-      setDisplayNameInput(user.user_metadata.display_name);
+    if (!isEditingDisplayName) {
+      setDisplayNameInput(effectiveDisplayName);
     }
-  }, [profile?.displayName, user?.user_metadata?.display_name]);
+  }, [effectiveDisplayName, isEditingDisplayName]);
 
   useEffect(() => {
-    if (profile?.username) {
-      setUsernameInput(profile.username);
-    } else if (username) {
-      setUsernameInput(username);
+    if (!isEditingUsername) {
+      setUsernameInput(userHandle);
     }
-  }, [profile?.username, username]);
+  }, [userHandle, isEditingUsername]);
 
   const cooldownStatus = checkUsernameChangeCooldown(lastUsernameChangedAt);
 
@@ -225,9 +239,6 @@ export function ProfileDetailsModal({ isOpen, onClose }: ProfileDetailsModalProp
       setTimeout(() => setResetSuccess(false), 3500);
     }
   };
-
-  const effectiveDisplayName = profile?.displayName || "Learner";
-  const userHandle = profile?.username || "learner";
 
   const formatStudyTime = (mins: number) => {
     const totalMins = Math.floor(Math.max(0, mins || 0));

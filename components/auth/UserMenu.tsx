@@ -39,6 +39,7 @@ import { useAuth } from "@/lib/supabase/auth-context";
 import { useUserAvatar } from "@/lib/avatars";
 import { useProgressStore } from "@/lib/progress/store";
 import { ProfileDetailsModal } from "./ProfileDetailsModal";
+import { formatStudyTime } from "@/lib/utils/time";
 import { cn } from "@/lib/utils";
 
 export function UserMenu() {
@@ -53,11 +54,36 @@ export function UserMenu() {
     triggerSync,
   } = useAuth();
 
-  // Instant deterministic profile values from authoritative baseline
-  const displayName = profile?.displayName || "Learner";
-  const userHandle = profile?.username || "learner";
-  const avatarId = profile?.avatarId || "human-male-alex";
-  const gender = profile?.gender || "male";
+  // Instant deterministic profile values from authoritative baseline with full metadata & identity fallbacks
+  const meta = user?.user_metadata || (user as any)?.raw_user_meta_data || {};
+  const idData = (user?.identities?.[0]?.identity_data) || {};
+  const displayName =
+    profile?.displayName ||
+    meta.full_name ||
+    meta.name ||
+    meta.display_name ||
+    idData.full_name ||
+    idData.name ||
+    (meta.given_name ? `${meta.given_name} ${meta.family_name || ""}`.trim() : null) ||
+    (idData.given_name ? `${idData.given_name} ${idData.family_name || ""}`.trim() : null) ||
+    meta.user_name ||
+    idData.user_name ||
+    (user?.email ? user.email.split("@")[0] : null) ||
+    "Learner";
+
+  const userHandle =
+    profile?.username ||
+    meta.username ||
+    meta.user_name ||
+    meta.preferred_username ||
+    idData.user_name ||
+    idData.preferred_username ||
+    idData.login ||
+    (user?.email ? user.email.split("@")[0].replace(/[^a-zA-Z0-9_]/g, "") : null) ||
+    "learner";
+
+  const avatarId = profile?.avatarId || meta.avatar_id || idData.avatar_id || "human-male-alex";
+  const gender = profile?.gender || meta.gender || idData.gender || "male";
 
   const { currentAvatar } = useUserAvatar(avatarId, gender);
 
@@ -111,14 +137,6 @@ export function UserMenu() {
     user.app_metadata?.providers?.[0] ||
     "email";
 
-  const formatStudyTime = (mins: number) => {
-    const totalMins = Math.floor(Math.max(0, mins || 0));
-    if (totalMins < 60) return `${totalMins}m`;
-    const hrs = Math.floor(totalMins / 60);
-    const rem = totalMins % 60;
-    return rem > 0 ? `${hrs}h ${rem}m` : `${hrs}h`;
-  };
-
   // Learner rank & tier calculation
   const lessonCount = completedLessons.size;
   const rank =
@@ -151,13 +169,13 @@ export function UserMenu() {
 
   // Shared inner content across all viewports
   const renderProfileBody = (isMobileSheet = false) => (
-    <div className="flex flex-col gap-3 min-w-0">
+    <div className="flex flex-col gap-2 sm:gap-2.5 min-w-0">
       {/* Profile Header with Avatar & Identity Card */}
-      <div className="p-3 rounded-2xl bg-slate-100/70 dark:bg-white/[0.04] border border-slate-200/60 dark:border-white/[0.06]">
-        <div className="flex items-center gap-3">
+      <div className="p-2 sm:p-3 rounded-2xl bg-slate-100/70 dark:bg-white/[0.04] border border-slate-200/60 dark:border-white/[0.06]">
+        <div className="flex items-center gap-2.5 sm:gap-3">
           <div
             className={cn(
-              "w-12 h-12 sm:w-[52px] sm:h-[52px] rounded-full flex items-center justify-center text-white shrink-0 shadow-md",
+              "w-10 h-10 sm:w-12 sm:h-12 rounded-full flex items-center justify-center text-white shrink-0 shadow-md",
               `bg-gradient-to-br ${currentAvatar.gradient}`
             )}
             style={{
@@ -169,12 +187,12 @@ export function UserMenu() {
 
           <div className="min-w-0 flex-1">
             <div className="flex items-center justify-between gap-1.5">
-              <div className="text-sm sm:text-base font-bold text-slate-900 dark:text-white truncate">
+              <div className="text-xs sm:text-sm md:text-base font-bold text-slate-900 dark:text-white truncate">
                 {displayName}
               </div>
 
               {/* Auth Provider Pill */}
-              <span className="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded bg-slate-200/80 dark:bg-white/10 text-slate-600 dark:text-slate-300 font-semibold shrink-0">
+              <span className="text-[9px] sm:text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded bg-slate-200/80 dark:bg-white/10 text-slate-600 dark:text-slate-300 font-semibold shrink-0">
                 {provider}
               </span>
             </div>
@@ -183,7 +201,7 @@ export function UserMenu() {
               <button
                 type="button"
                 onClick={handleCopyHandle}
-                className="group flex items-center gap-1 text-xs font-mono text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                className="group flex items-center gap-1 text-[11px] sm:text-xs font-mono text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
                 title="Click to copy handle"
               >
                 <span>@{userHandle}</span>
@@ -195,22 +213,22 @@ export function UserMenu() {
               </button>
             </div>
 
-            <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
+            <div className="text-[10px] sm:text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
               {user.email}
             </div>
           </div>
         </div>
 
         {/* Rank & Progress Bar */}
-        <div className="mt-2.5 pt-2.5 border-t border-slate-200/50 dark:border-white/[0.06]">
-          <div className="flex items-center justify-between text-xs mb-1.5">
+        <div className="mt-2 pt-2 border-t border-slate-200/50 dark:border-white/[0.06]">
+          <div className="flex items-center justify-between text-[11px] sm:text-xs mb-1">
             <div className="flex items-center gap-1.5">
               <Award className="w-3.5 h-3.5 text-amber-500" />
               <span className="font-semibold text-slate-900 dark:text-white">
                 {rank.title}
               </span>
             </div>
-            <span className="text-slate-400 font-mono text-[11px]">
+            <span className="text-slate-400 font-mono text-[10px] sm:text-[11px]">
               {lessonCount}/{rank.nextTarget} Lessons
             </span>
           </div>
@@ -226,8 +244,8 @@ export function UserMenu() {
 
       {/* 4 Learning Stats Grid */}
       <div className="grid grid-cols-4 gap-1.5 sm:gap-2">
-        <div className="p-2 sm:p-2.5 rounded-xl bg-white/60 dark:bg-white/[0.04] border border-slate-200/60 dark:border-white/[0.08] shadow-xs text-center backdrop-blur-md">
-          <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center justify-center gap-0.5">
+        <div className="p-1.5 sm:p-2.5 rounded-xl bg-white/60 dark:bg-white/[0.04] border border-slate-200/60 dark:border-white/[0.08] shadow-xs text-center backdrop-blur-md">
+          <div className="text-[9px] sm:text-[10px] text-slate-500 dark:text-slate-400 flex items-center justify-center gap-0.5">
             <BookOpen className="w-3 h-3 text-blue-500" />
             <span>Done</span>
           </div>
@@ -236,8 +254,8 @@ export function UserMenu() {
           </span>
         </div>
 
-        <div className="p-2 sm:p-2.5 rounded-xl bg-white/60 dark:bg-white/[0.04] border border-slate-200/60 dark:border-white/[0.08] shadow-xs text-center backdrop-blur-md">
-          <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center justify-center gap-0.5">
+        <div className="p-1.5 sm:p-2.5 rounded-xl bg-white/60 dark:bg-white/[0.04] border border-slate-200/60 dark:border-white/[0.08] shadow-xs text-center backdrop-blur-md">
+          <div className="text-[9px] sm:text-[10px] text-slate-500 dark:text-slate-400 flex items-center justify-center gap-0.5">
             <Flame className="w-3 h-3 text-amber-500" />
             <span>Streak</span>
           </div>
@@ -246,8 +264,8 @@ export function UserMenu() {
           </span>
         </div>
 
-        <div className="p-2 sm:p-2.5 rounded-xl bg-white/60 dark:bg-white/[0.04] border border-slate-200/60 dark:border-white/[0.08] shadow-xs text-center backdrop-blur-md">
-          <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center justify-center gap-0.5">
+        <div className="p-1.5 sm:p-2.5 rounded-xl bg-white/60 dark:bg-white/[0.04] border border-slate-200/60 dark:border-white/[0.08] shadow-xs text-center backdrop-blur-md">
+          <div className="text-[9px] sm:text-[10px] text-slate-500 dark:text-slate-400 flex items-center justify-center gap-0.5">
             <Clock className="w-3 h-3 text-emerald-500" />
             <span>Time</span>
           </div>
@@ -256,8 +274,8 @@ export function UserMenu() {
           </span>
         </div>
 
-        <div className="p-2 sm:p-2.5 rounded-xl bg-white/60 dark:bg-white/[0.04] border border-slate-200/60 dark:border-white/[0.08] shadow-xs text-center backdrop-blur-md">
-          <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center justify-center gap-0.5">
+        <div className="p-1.5 sm:p-2.5 rounded-xl bg-white/60 dark:bg-white/[0.04] border border-slate-200/60 dark:border-white/[0.08] shadow-xs text-center backdrop-blur-md">
+          <div className="text-[9px] sm:text-[10px] text-slate-500 dark:text-slate-400 flex items-center justify-center gap-0.5">
             <Bookmark className="w-3 h-3 text-purple-500" />
             <span>Saved</span>
           </div>
@@ -268,7 +286,7 @@ export function UserMenu() {
       </div>
 
       {/* Sync Status Banner */}
-      <div className="px-3 py-2 rounded-xl bg-white/50 dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.06] text-xs flex items-center justify-between">
+      <div className="px-2.5 py-1.5 sm:px-3 sm:py-2 rounded-xl bg-white/50 dark:bg-white/[0.03] border border-slate-200/50 dark:border-white/[0.06] text-[11px] sm:text-xs flex items-center justify-between">
         <div className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300">
           {syncStatus === "syncing" || syncStatus === "migrating" || isManualSyncing ? (
             <>
@@ -304,7 +322,7 @@ export function UserMenu() {
           type="button"
           onClick={handleManualSync}
           disabled={isManualSyncing || syncStatus === "syncing"}
-          className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 transition-colors disabled:opacity-50 cursor-pointer"
+          className="flex items-center gap-1 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-lg text-xs font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 transition-colors disabled:opacity-50 cursor-pointer"
           title="Sync now"
         >
           <RefreshCw className={`w-3 h-3 ${isManualSyncing ? "animate-spin" : ""}`} />
@@ -313,12 +331,12 @@ export function UserMenu() {
       </div>
 
       {/* View Full Profile & Details action */}
-      <div className="pt-1">
+      <div className="pt-0.5">
         <button
           type="button"
           id="usermenu-open-details-btn"
           onClick={openFullProfile}
-          className="w-full flex items-center justify-center gap-2 py-2.5 px-3 min-h-[44px] rounded-xl bg-blue-500/10 hover:bg-blue-500/15 border border-blue-500/25 text-blue-600 dark:text-blue-400 font-bold text-xs sm:text-sm transition-all cursor-pointer shadow-xs active:scale-[0.99]"
+          className="w-full flex items-center justify-center gap-2 py-2 sm:py-2.5 px-3 min-h-[40px] sm:min-h-[44px] rounded-xl bg-blue-500/10 hover:bg-blue-500/15 border border-blue-500/25 text-blue-600 dark:text-blue-400 font-bold text-xs sm:text-sm transition-all cursor-pointer shadow-xs active:scale-[0.99]"
         >
           <User className="w-4 h-4" />
           <span>View Full Profile & Details</span>
@@ -334,7 +352,7 @@ export function UserMenu() {
             setIsOpen(false);
             router.push("/bookmarks");
           }}
-          className="w-full flex items-center justify-between px-3 py-2 min-h-[42px] rounded-xl text-xs sm:text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100/80 dark:hover:bg-white/[0.06] transition-colors text-left cursor-pointer"
+          className="w-full flex items-center justify-between px-2.5 sm:px-3 py-1.5 sm:py-2 min-h-[38px] sm:min-h-[42px] rounded-xl text-xs sm:text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100/80 dark:hover:bg-white/[0.06] transition-colors text-left cursor-pointer"
         >
           <div className="flex items-center gap-2">
             <Bookmark className="w-4 h-4 shrink-0 text-purple-500" />
@@ -353,7 +371,7 @@ export function UserMenu() {
             setIsOpen(false);
             router.push("/settings");
           }}
-          className="w-full flex items-center gap-2 px-3 py-2 min-h-[42px] rounded-xl text-xs sm:text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100/80 dark:hover:bg-white/[0.06] transition-colors text-left cursor-pointer"
+          className="w-full flex items-center gap-2 px-2.5 sm:px-3 py-1.5 sm:py-2 min-h-[38px] sm:min-h-[42px] rounded-xl text-xs sm:text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100/80 dark:hover:bg-white/[0.06] transition-colors text-left cursor-pointer"
         >
           <Settings className="w-4 h-4 shrink-0 text-slate-400" />
           <span>Account Settings & Profile</span>
@@ -366,7 +384,7 @@ export function UserMenu() {
             await signOut();
             router.push("/");
           }}
-          className="w-full flex items-center gap-2 px-3 py-2 min-h-[42px] rounded-xl text-xs sm:text-sm font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 transition-colors text-left cursor-pointer"
+          className="w-full flex items-center gap-2 px-2.5 sm:px-3 py-1.5 sm:py-2 min-h-[38px] sm:min-h-[42px] rounded-xl text-xs sm:text-sm font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 transition-colors text-left cursor-pointer"
         >
           <LogOut className="w-4 h-4 shrink-0" />
           <span>Sign Out</span>
@@ -448,121 +466,34 @@ export function UserMenu() {
         </div>
       </button>
 
-      {/* Adaptive Profile Presentation */}
+      {/* Unified Adaptive Dropdown Pop-Up Flow for Laptop, Tablet, and Mobile */}
       <AnimatePresence>
         {isOpen && (
           <>
-            {/* Global Backdrop across all views */}
+            {/* Soft backdrop to easily dismiss on outside click/tap */}
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              transition={{ duration: 0.15 }}
-              className="fixed inset-0 bg-slate-950/60 dark:bg-black/75 backdrop-blur-xs z-50 transition-opacity"
+              transition={{ duration: 0.12 }}
+              className="fixed inset-0 bg-slate-950/20 dark:bg-black/40 backdrop-blur-[2px] z-40"
               onClick={() => setIsOpen(false)}
             />
 
-            {/* 1. MOBILE (<640px): True Bottom-Sheet.
-                 Header (pull handle + title + close) is a `shrink-0` block OUTSIDE
-                 the scrollable region, so it can never scroll out of reach no matter
-                 how tall the body content gets. The body is its own `flex-1 min-h-0
-                 overflow-y-auto` region. Bottom padding uses env(safe-area-inset-bottom)
-                 directly (the previous `pb-safe` class does not exist in this Tailwind
-                 setup and generated no CSS at all, which is why content could sit
-                 under the home-indicator area). */}
-            <div className="block sm:hidden fixed inset-x-0 bottom-0 z-50 px-2 pointer-events-none">
-              <motion.div
-                initial={{ y: "100%" }}
-                animate={{ y: 0 }}
-                exit={{ y: "100%" }}
-                transition={{ type: "spring", damping: 28, stiffness: 300 }}
-                className="pointer-events-auto w-full max-w-lg mx-auto rounded-t-3xl border-t border-x border-slate-200/80 dark:border-white/15 bg-white/95 dark:bg-slate-900/95 backdrop-blur-2xl shadow-2xl max-h-[88dvh] overflow-hidden flex flex-col min-w-0"
-                style={{
-                  boxShadow: "0 -8px 32px rgba(0, 0, 0, 0.35)",
-                }}
-              >
-                {/* Sticky Header: pull handle + title + close — never scrolls away */}
-                <div className="shrink-0 px-4 pt-3">
-                  <div className="w-10 h-1.5 rounded-full bg-slate-300 dark:bg-white/20 mx-auto mb-3" />
-                  <div className="flex items-center justify-between pb-2.5 border-b border-slate-200/60 dark:border-white/[0.08]">
-                    <span className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                      <User className="w-4 h-4 text-blue-500" />
-                      Learner Profile
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setIsOpen(false)}
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer shrink-0"
-                      aria-label="Close Profile Menu"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Scrollable body — independent scroll region, safe-area-aware bottom padding */}
-                <div
-                  className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 pt-3"
-                  style={{ paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}
-                >
-                  {renderProfileBody(true)}
-                </div>
-              </motion.div>
-            </div>
-
-            {/* 2. TABLET (640–1023px): Anchored Compact Popover (~360px wide).
-                 Same sticky-header / scrollable-body split as mobile so long content
-                 never pushes the close button out of reach or clips horizontally. */}
-            <div className="hidden sm:block lg:hidden fixed top-16 right-4 z-50 pointer-events-none">
-              <motion.div
-                initial={{ opacity: 0, y: -8, scale: 0.98 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
-                className="pointer-events-auto w-[360px] max-w-[calc(100vw-2rem)] rounded-2xl border border-slate-200/80 dark:border-white/15 bg-white/95 dark:bg-slate-900/95 backdrop-blur-2xl shadow-2xl max-h-[85vh] overflow-hidden flex flex-col min-w-0"
-                style={{
-                  boxShadow: "0 20px 48px -8px rgba(0, 0, 0, 0.45)",
-                }}
-              >
-                {/* Sticky Header */}
-                <div className="shrink-0 px-4 pt-4">
-                  <div className="flex items-center justify-between pb-2 border-b border-slate-200/60 dark:border-white/[0.08]">
-                    <span className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                      <User className="w-3.5 h-3.5 text-blue-500" />
-                      Learner Profile
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setIsOpen(false)}
-                      className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors cursor-pointer shrink-0"
-                      aria-label="Close Profile Menu"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Scrollable body */}
-                <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 pb-4 pt-2.5">
-                  {renderProfileBody(false)}
-                </div>
-              </motion.div>
-            </div>
-
-            {/* 3. DESKTOP (1024px+): Standard Dropdown anchored below Capsule */}
-            <div className="hidden lg:block absolute top-full right-0 mt-2 z-50 pointer-events-none">
+            {/* Anchored Pop-Up Dropdown: Identical flawless flow on Laptop, Tablet, and Mobile */}
+            <div className="absolute top-full right-0 mt-1.5 sm:mt-2 z-50 pointer-events-none">
               <motion.div
                 initial={{ opacity: 0, y: -6, scale: 0.98 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, y: -6, scale: 0.98 }}
                 transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
-                className="pointer-events-auto w-[336px] rounded-2xl border border-slate-200/80 dark:border-white/15 bg-white/95 dark:bg-slate-900/95 backdrop-blur-2xl shadow-2xl p-3.5 max-h-[calc(100vh-5rem)] overflow-y-auto overscroll-contain min-w-0"
+                className="pointer-events-auto w-[280px] xs:w-[300px] sm:w-[325px] md:w-[336px] max-w-[calc(100vw-1.25rem)] rounded-2xl border border-slate-200/90 dark:border-white/15 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl shadow-2xl p-2.5 sm:p-3.5 max-h-[calc(100dvh-4.25rem)] overflow-y-auto overscroll-contain min-w-0"
                 style={{
-                  boxShadow: "0 20px 48px -8px rgba(0, 0, 0, 0.45)",
+                  boxShadow: "0 20px 48px -8px rgba(0, 0, 0, 0.42), 0 0 0 1px rgba(255, 255, 255, 0.08)",
                 }}
               >
                 {/* Header Row */}
-                <div className="flex items-center justify-between pb-2 mb-2.5 border-b border-slate-200/60 dark:border-white/[0.08]">
+                <div className="flex items-center justify-between pb-1.5 mb-2 sm:pb-2 sm:mb-2.5 border-b border-slate-200/60 dark:border-white/[0.08]">
                   <span className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
                     <User className="w-3.5 h-3.5 text-blue-500" />
                     Learner Profile
@@ -577,7 +508,7 @@ export function UserMenu() {
                   </button>
                 </div>
 
-                {renderProfileBody(false)}
+                {renderProfileBody(true)}
               </motion.div>
             </div>
           </>

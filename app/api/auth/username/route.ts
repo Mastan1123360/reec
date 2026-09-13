@@ -156,7 +156,7 @@ export async function POST(req: NextRequest) {
     const userEmail = authResult.context.userEmail;
 
     const body = await req.json();
-    const { username, force } = body;
+    const { username, force, clientLastChangedAt } = body;
 
     if (!username) {
       return NextResponse.json({ error: "Missing required field: username" }, { status: 400 });
@@ -186,21 +186,47 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1. Check cooldown using user_metadata or profiles table
+    // 1. Authoritative check for existing username and cooldown timestamp
     let lastChangedAt: string | null = null;
     let currentDbUsername: string | null = null;
 
+    if (clientLastChangedAt) {
+      const clientTime = new Date(clientLastChangedAt).getTime();
+      if (!isNaN(clientTime)) {
+        lastChangedAt = clientLastChangedAt;
+      }
+    }
+
     if (authResult.context.user?.user_metadata?.last_username_change_at) {
-      lastChangedAt = authResult.context.user.user_metadata.last_username_change_at;
+      const userMetaTime = new Date(authResult.context.user.user_metadata.last_username_change_at).getTime();
+      if (!isNaN(userMetaTime) && (!lastChangedAt || userMetaTime > new Date(lastChangedAt).getTime())) {
+        lastChangedAt = authResult.context.user.user_metadata.last_username_change_at;
+      }
     }
     if (authResult.context.user?.user_metadata?.username) {
       currentDbUsername = authResult.context.user.user_metadata.username;
     }
 
+    // Query admin auth for authoritative metadata if available
+    if (supabase.auth?.admin?.getUserById) {
+      try {
+        const { data: adminUserData } = await supabase.auth.admin.getUserById(userId);
+        if (adminUserData?.user?.user_metadata) {
+          const meta = adminUserData.user.user_metadata;
+          if (meta.username && !currentDbUsername) {
+            currentDbUsername = meta.username;
+          }
+          if (meta.last_username_change_at) {
+            lastChangedAt = meta.last_username_change_at;
+          }
+        }
+      } catch {}
+    }
+
     try {
       const { data: currentProfile, error: profileErr } = await (supabase as any)
         .from("profiles")
-        .select("id, username")
+        .select("id, username, last_username_change_at")
         .eq("id", userId)
         .maybeSingle();
 
@@ -208,42 +234,50 @@ export async function POST(req: NextRequest) {
         if (currentProfile.username) {
           currentDbUsername = currentProfile.username;
         }
-        try {
-          const { data: cdData } = await (supabase as any)
-            .from("profiles")
-            .select("last_username_change_at")
-            .eq("id", userId)
-            .maybeSingle();
-          if (cdData?.last_username_change_at) {
-            lastChangedAt = cdData.last_username_change_at;
-          }
-        } catch {
-          // Column last_username_change_at not in schema cache
+        if (currentProfile.last_username_change_at) {
+          lastChangedAt = currentProfile.last_username_change_at;
         }
       }
     } catch {
-      // Ignored
+      // Fallback if last_username_change_at column query fails
+      try {
+        const { data: fallbackProf } = await (supabase as any)
+          .from("profiles")
+          .select("id, username")
+          .eq("id", userId)
+          .maybeSingle();
+        if (fallbackProf?.username) {
+          currentDbUsername = fallbackProf.username;
+        }
+      } catch {}
     }
 
-    // Crucial: Cooldown ONLY applies if user ALREADY has a username and is attempting to CHANGE to a DIFFERENT username
-    const isChangingToDifferentUsername =
+    // HARDENED COOLDOWN ENFORCEMENT:
+    // Cooldown strictly applies if user already has an established username and is changing to a different one.
+    // Client-side 'force' is strictly ignored when attempting to change an existing username within cooldown.
+    const isChangingToDifferentUsername = Boolean(
       currentDbUsername &&
-      currentDbUsername.trim().toLowerCase() !== clean.trim().toLowerCase();
+      currentDbUsername.trim().toLowerCase() !== clean.trim().toLowerCase()
+    );
 
-    if (!force && isChangingToDifferentUsername && lastChangedAt) {
+    if (isChangingToDifferentUsername && lastChangedAt) {
       const lastTime = new Date(lastChangedAt).getTime();
       if (!isNaN(lastTime)) {
         const elapsed = Date.now() - lastTime;
         if (elapsed < SIX_MONTHS_MS) {
-          const remainingDays = Math.ceil((SIX_MONTHS_MS - elapsed) / (24 * 60 * 60 * 1000));
-          const nextDate = new Date(lastTime + SIX_MONTHS_MS).toLocaleDateString();
+          const remainingDays = Math.max(1, Math.ceil((SIX_MONTHS_MS - elapsed) / (24 * 60 * 60 * 1000)));
+          const nextDate = new Date(lastTime + SIX_MONTHS_MS).toLocaleDateString(undefined, {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          });
           return NextResponse.json(
             {
-              error: `Usernames can only be changed once every 6 months. You can change your username again on ${nextDate} (in ${remainingDays} days).`,
+              error: `Username is locked by the 180-day security cooldown. You can change your username again on ${nextDate} (${remainingDays} days remaining).`,
               remainingDays,
               nextChangeDate: nextDate,
             },
-            { status: 429 }
+            { status: 403 }
           );
         }
       }

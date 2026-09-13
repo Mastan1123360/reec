@@ -200,9 +200,9 @@ export function evaluateUnlockedBadges(
 
   for (const badge of BADGE_DEFINITIONS) {
     let currentVal = 0;
-    if (badge.metric === "lessons") currentVal = lessonsCount;
-    else if (badge.metric === "streak") currentVal = streakDays;
-    else if (badge.metric === "minutes") currentVal = studyTimeMinutes;
+    if (badge.metric === "lessons") currentVal = Math.round(lessonsCount || 0);
+    else if (badge.metric === "streak") currentVal = Math.round(streakDays || 0);
+    else if (badge.metric === "minutes") currentVal = Math.round(studyTimeMinutes || 0);
 
     if (currentVal >= badge.threshold) {
       unlocked.push({ ...badge, unlocked: true });
@@ -235,9 +235,9 @@ export function evaluateBadges(metrics: {
   const results = [];
   for (const badge of BADGE_DEFINITIONS) {
     let currentVal = 0;
-    if (badge.metric === "lessons") currentVal = metrics.lessonsCount;
-    else if (badge.metric === "streak") currentVal = metrics.streakDays;
-    else if (badge.metric === "minutes") currentVal = metrics.studyMinutes;
+    if (badge.metric === "lessons") currentVal = Math.round(metrics.lessonsCount || 0);
+    else if (badge.metric === "streak") currentVal = Math.round(metrics.streakDays || 0);
+    else if (badge.metric === "minutes") currentVal = Math.round(metrics.studyMinutes || 0);
 
     const isUnlocked = currentVal >= badge.threshold;
     const progressPercent = Math.min(100, Math.round((currentVal / badge.threshold) * 100));

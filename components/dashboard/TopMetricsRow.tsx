@@ -167,17 +167,22 @@ export function TimeInvestedCard() {
   const getWeekDailyMinutes = useProgressStore((s) => s.getWeekDailyMinutes);
 
   const weekDays = isMounted && getWeekDailyMinutes ? getWeekDailyMinutes() : [];
-  const totalMinutes = isMounted ? studyTimeMinutes || 0 : 0;
+  const totalMinutes = isMounted ? Math.round(studyTimeMinutes || 0) : 0;
   const hoursDisplay =
     totalMinutes >= 60
-      ? (totalMinutes / 60).toFixed(1).replace(".0", "")
-      : "<1";
+      ? (Math.round((totalMinutes / 60) * 10) / 10).toFixed(1).replace(/\.0$/, "")
+      : totalMinutes > 0
+      ? `${totalMinutes}m`
+      : "0h";
 
-  const thisWeekMinutes = weekDays.reduce((acc, d) => acc + (d.minutes || 0), 0);
+  const thisWeekMinutes = Math.round(weekDays.reduce((acc, d) => acc + (d.minutes || 0), 0));
+  const thisWeekHours = Math.round((thisWeekMinutes / 60) * 10) / 10;
   const thisWeekHoursDisplay =
-    thisWeekMinutes > 0
-      ? `+${(thisWeekMinutes / 60).toFixed(1)}h this week`
-      : "+0.5h this week";
+    thisWeekMinutes >= 60
+      ? `+${thisWeekHours.toFixed(1).replace(/\.0$/, "")}h this week`
+      : thisWeekMinutes > 0
+      ? `+${thisWeekMinutes}m this week`
+      : "0h this week";
 
   return (
     <div

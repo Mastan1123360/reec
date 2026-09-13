@@ -26,6 +26,7 @@ import { useProgressStore, formatDateKey } from "@/lib/progress/store";
 import { useIsMounted } from "@/lib/hooks/useIsMounted";
 import { StudySessionModal } from "@/components/dashboard/StudySessionModal";
 import { cn } from "@/lib/utils";
+import { formatStudyTimeMetric, normalizeMinutes } from "@/lib/utils/time";
 
 type TimeframeFilter = "today" | "week" | "month" | "all";
 
@@ -350,17 +351,22 @@ export default function DetailedAnalyticsPage() {
             <Clock size={20} className="text-blue-600 dark:text-blue-400 shrink-0" />
           </div>
           <div className="mt-2 flex items-baseline gap-1.5">
-            <span className="text-3xl font-black font-mono text-slate-900 dark:text-white">
-              {analyticsData.totalMins >= 60
-                ? (analyticsData.totalMins / 60).toFixed(1).replace(".0", "")
-                : analyticsData.totalMins}
-            </span>
-            <span className="text-sm font-medium text-slate-500 dark:text-slate-400">
-              {analyticsData.totalMins >= 60 ? "hours" : "mins"}
-            </span>
+            {(() => {
+              const metric = formatStudyTimeMetric(analyticsData.totalMins);
+              return (
+                <>
+                  <span className="text-3xl font-black font-mono text-slate-900 dark:text-white">
+                    {metric.value}
+                  </span>
+                  <span className="text-sm font-medium text-slate-500 dark:text-slate-400">
+                    {metric.unit}
+                  </span>
+                </>
+              );
+            })()}
           </div>
           <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-white/[0.06] text-[11px] text-slate-500 dark:text-slate-400 flex items-center justify-between">
-            <span>Today: {getTodayMinutes ? getTodayMinutes() : 0} mins</span>
+            <span>Today: {normalizeMinutes(getTodayMinutes ? getTodayMinutes() : 0)} mins</span>
             <span className="text-blue-600 dark:text-blue-400 font-semibold">
               {streakInfo.current > 0 ? "Daily Active" : "Session Pending"}
             </span>

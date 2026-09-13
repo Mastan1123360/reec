@@ -14,6 +14,7 @@ import {
 import { useProgressStore, getTodayString, formatDateKey } from "@/lib/progress/store";
 import { useIsMounted } from "@/lib/hooks/useIsMounted";
 import { cn } from "@/lib/utils";
+import { formatStudyTimeShort } from "@/lib/utils/time";
 
 type Timeframe = "today" | "week" | "month";
 
@@ -170,12 +171,12 @@ export function LearningAnalyticsCard() {
     let timeSparkline: number[] = [0, 0, 0, 0, 0, 0, 0];
 
     if (timeframe === "today") {
-      totalMinutes = getTodayMinutes ? getTodayMinutes() : 0;
+      totalMinutes = Math.round(getTodayMinutes ? getTodayMinutes() : 0);
       timeSparkline = totalMinutes > 0 ? [0, 0, 0, Math.floor(totalMinutes / 3), Math.floor(totalMinutes / 2), totalMinutes] : [0, 0, 0, 0, 0, 0, 0];
     } else if (timeframe === "week") {
       const weekDays = getWeekDailyMinutes ? getWeekDailyMinutes() : [];
-      totalMinutes = weekDays.reduce((acc, d) => acc + (d.minutes || 0), 0);
-      timeSparkline = weekDays.map((d) => d.minutes || 0);
+      totalMinutes = Math.round(weekDays.reduce((acc, d) => acc + (d.minutes || 0), 0));
+      timeSparkline = weekDays.map((d) => Math.round(d.minutes || 0));
       if (timeSparkline.length === 0 || timeSparkline.every((v) => v === 0)) {
         timeSparkline = [0, 0, 0, 0, 0, 0, 0];
       }
@@ -186,18 +187,15 @@ export function LearningAnalyticsCard() {
         const d = new Date();
         d.setDate(d.getDate() - i * 4);
         const dKey = formatDateKey(d);
-        const mins = safeDaily[dKey] || 0;
+        const mins = Math.round(safeDaily[dKey] || 0);
         sum30 += mins;
         thirtyDayArr.push(mins);
       }
-      totalMinutes = Math.max(sum30, studyTimeMinutes || 0);
+      totalMinutes = Math.round(Math.max(sum30, studyTimeMinutes || 0));
       timeSparkline = thirtyDayArr.length > 0 ? thirtyDayArr : [0, 0, 0, 0, 0, 0, 0];
     }
 
-    const studyTimeFormatted =
-      totalMinutes >= 60
-        ? `${(totalMinutes / 60).toFixed(1).replace(".0", "")}h`
-        : `${totalMinutes}m`;
+    const studyTimeFormatted = formatStudyTimeShort(totalMinutes);
 
     // 3. Code Executions
     let codeExecutions = 0;

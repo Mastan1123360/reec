@@ -279,9 +279,8 @@ export const useProgressStore = create<ProgressState>()(
           const currentDaily = state.dailyMinutes ?? {};
           const currentDayMins = currentDaily[today] ?? 0;
           const addedMinutes = seconds / 60;
-          const newDayMins = Math.round((currentDayMins + addedMinutes) * 10) / 10;
-          
-          const newTotalMins = Math.round(((state.studyTimeMinutes ?? 0) + addedMinutes) * 10) / 10;
+          const newDayMins = Math.round(currentDayMins + addedMinutes);
+          const newTotalMins = Math.round((state.studyTimeMinutes ?? 0) + addedMinutes);
           const currentActiveDates = Array.isArray(state.activeDates) ? state.activeDates : [];
           const activeDates = currentActiveDates.includes(today) ? currentActiveDates : [today, ...currentActiveDates];
 
@@ -300,11 +299,12 @@ export const useProgressStore = create<ProgressState>()(
       addStudyMinutes: (minutes, note) => {
         if (minutes <= 0) return;
         set((state) => {
+          const cleanMinutes = Math.round(minutes);
           const today = getTodayString();
           const currentDaily = state.dailyMinutes ?? {};
           const currentDayMins = currentDaily[today] ?? 0;
-          const newDayMins = Math.round((currentDayMins + minutes) * 10) / 10;
-          const newTotalMins = Math.round(((state.studyTimeMinutes ?? 0) + minutes) * 10) / 10;
+          const newDayMins = Math.round(currentDayMins + cleanMinutes);
+          const newTotalMins = Math.round((state.studyTimeMinutes ?? 0) + cleanMinutes);
 
           const currentActiveDates = Array.isArray(state.activeDates) ? state.activeDates : [];
           const activeDates = currentActiveDates.includes(today) ? currentActiveDates : [today, ...currentActiveDates];
@@ -313,7 +313,7 @@ export const useProgressStore = create<ProgressState>()(
           newActivities.unshift({
             id: `act-${Date.now()}`,
             type: "study_session",
-            title: `Logged +${minutes}m study time`,
+            title: `Logged +${cleanMinutes}m study time`,
             subtitle: note || "Manual focus session",
             timestamp: Date.now(),
             iconType: "time",
@@ -488,7 +488,7 @@ export const useProgressStore = create<ProgressState>()(
           return {
             label,
             date: dateKey,
-            minutes: safeDaily[dateKey] ?? 0,
+            minutes: Math.round(safeDaily[dateKey] ?? 0),
             isToday: dateKey === todayStr,
           };
         });

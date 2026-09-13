@@ -438,6 +438,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 }).catch(() => {});
               }
 
+              // Auto-heal DB profile if displayName, avatarId, or gender are missing in table
+              if (
+                (!dbProfile.displayName && reconciled.displayName) ||
+                (!dbProfile.avatarId && reconciled.avatarId) ||
+                (!dbProfile.gender && reconciled.gender)
+              ) {
+                fetch("/api/auth/profile", {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${supabaseSession.access_token}`,
+                  },
+                  body: JSON.stringify({
+                    displayName: reconciled.displayName,
+                    avatarId: reconciled.avatarId,
+                    gender: reconciled.gender,
+                  }),
+                }).catch(() => {});
+              }
+
               return {
                 ...prev,
                 profile: reconciled,
@@ -1040,8 +1060,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 prompt: "select_account",
               }
             : {
-                prompt: "select_account",
+                prompt: "consent",
               };
+
+        const ensureAccountPromptUrl = (rawUrl: string): string => {
+          try {
+            const parsed = new URL(rawUrl);
+            if (provider === "google") {
+              parsed.searchParams.set("prompt", "select_account");
+              parsed.searchParams.set("access_type", "offline");
+            } else if (provider === "github") {
+              parsed.searchParams.set("prompt", "consent");
+            }
+            return parsed.toString();
+          } catch {
+            return rawUrl;
+          }
+        };
 
         if (isInIframe) {
           const { data, error } = await client.auth.signInWithOAuth({
@@ -1058,34 +1093,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
 
           if (data?.url) {
+            const finalUrl = ensureAccountPromptUrl(data.url);
             const width = 600;
             const height = 750;
             const left = window.screenX + (window.outerWidth - width) / 2;
             const top = window.screenY + (window.outerHeight - height) / 2;
             const popup = window.open(
-              data.url,
+              finalUrl,
               "reec_oauth_popup",
               `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,status=no,resizable=yes`
             );
 
             if (!popup || popup.closed || typeof popup.closed === "undefined") {
-              window.open(data.url, "_blank");
+              window.open(finalUrl, "_blank");
             }
           }
           return { error: null };
         }
 
         if (isMobileOrTablet) {
-          const { error } = await client.auth.signInWithOAuth({
+          const { data, error } = await client.auth.signInWithOAuth({
             provider,
             options: {
               redirectTo,
+              skipBrowserRedirect: true,
               queryParams: oauthQueryParams,
             },
           });
 
           if (error) {
             return { error: new Error(error.message) };
+          }
+
+          if (data?.url) {
+            const finalUrl = ensureAccountPromptUrl(data.url);
+            window.location.href = finalUrl;
           }
           return { error: null };
         }
@@ -1105,18 +1147,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
 
         if (data?.url) {
+          const finalUrl = ensureAccountPromptUrl(data.url);
           const width = 600;
           const height = 750;
           const left = window.screenX + (window.outerWidth - width) / 2;
           const top = window.screenY + (window.outerHeight - height) / 2;
           const popup = window.open(
-            data.url,
+            finalUrl,
             "reec_oauth_popup",
             `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,status=no,resizable=yes`
           );
 
           if (!popup || popup.closed || typeof popup.closed === "undefined") {
-            window.location.href = data.url;
+            window.location.href = finalUrl;
           }
         }
 
@@ -1147,15 +1190,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return { success: false, error: syntax.error };
       }
 
-      const clean = syntax.cleanUsername!;
-      const currentChangedAt = authState.profile?.lastUsernameChangedAt;
-      const currentUsername = authState.profile?.username;
+      const currentChangedAt =
+        authState.profile?.lastUsernameChangedAt ||
+        authState.user?.user_metadata?.last_username_change_at ||
+        (typeof window !== "undefined" && authState.user?.id
+          ? localStorage.getItem(`reec_last_username_change_at_${authState.user.id}`)
+          : null);
+      const currentUsername =
+        authState.profile?.username ||
+        authState.user?.user_metadata?.username ||
+        (typeof window !== "undefined" && authState.user?.id
+          ? localStorage.getItem(`reec_username_${authState.user.id}`)
+          : null);
 
       // Cooldown only applies if user ALREADY has a username and is attempting to change it to a DIFFERENT one
       const isChangingToDifferent =
         currentUsername && currentUsername.trim().toLowerCase() !== clean.trim().toLowerCase();
 
-      if (isChangingToDifferent) {
+      if (isChangingToDifferent && currentChangedAt) {
         const cooldown = checkUsernameChangeCooldown(currentChangedAt);
         if (!cooldown.canChange) {
           return {
@@ -1186,6 +1238,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           },
           body: JSON.stringify({
             username: clean,
+            clientLastChangedAt: currentChangedAt || undefined,
           }),
         });
 
@@ -1200,11 +1253,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           };
         }
 
+        const effectiveChangedAt = apiData.lastChangedAt || new Date().toISOString();
+
         // Cache persistent username in localStorage
         if (typeof window !== "undefined") {
           try {
             localStorage.setItem(`reec_username_${authState.user.id}`, clean);
             localStorage.setItem("reec_persisted_username", clean);
+            localStorage.setItem(`reec_last_username_change_at_${authState.user.id}`, effectiveChangedAt);
           } catch {}
         }
 
@@ -1215,7 +1271,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             .updateUser({
               data: {
                 username: clean,
-                last_username_change_at: apiData.lastChangedAt || new Date().toISOString(),
+                last_username_change_at: effectiveChangedAt,
               },
             })
             .catch(() => {});
@@ -1230,14 +1286,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           avatarId: authState.profile?.avatarId || "human-male-alex",
           gender: authState.profile?.gender || "male",
           coins: authState.profile?.coins ?? null,
-          lastUsernameChangedAt: apiData.lastChangedAt || new Date().toISOString(),
+          lastUsernameChangedAt: effectiveChangedAt,
           createdAt: authState.profile?.createdAt,
           updatedAt: new Date().toISOString(),
         };
 
         effectiveProfile.username = clean;
-        effectiveProfile.lastUsernameChangedAt =
-          apiData.lastChangedAt || effectiveProfile.lastUsernameChangedAt || new Date().toISOString();
+        effectiveProfile.lastUsernameChangedAt = effectiveChangedAt;
 
         setAuthState(
           transitionToAuthenticated(
@@ -1400,10 +1455,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const user = useMemo(() => (authState.status === "authenticated" ? (authState.session?.user ?? null) : null), [authState]);
   const session = useMemo(() => (authState.status === "authenticated" ? authState.session : null), [authState]);
   const username = useMemo(() => (authState.status === "authenticated" ? authState.profile?.username ?? null : null), [authState]);
-  const lastUsernameChangedAt = useMemo(
-    () => (authState.status === "authenticated" ? authState.profile?.lastUsernameChangedAt ?? null : null),
-    [authState]
-  );
+  const lastUsernameChangedAt = useMemo(() => {
+    if (authState.status !== "authenticated") return null;
+    return (
+      authState.profile?.lastUsernameChangedAt ||
+      authState.user?.user_metadata?.last_username_change_at ||
+      (typeof window !== "undefined" && authState.user?.id
+        ? localStorage.getItem(`reec_last_username_change_at_${authState.user.id}`)
+        : null) ||
+      null
+    );
+  }, [authState]);
   const isLoading = useMemo(() => authState.status === "loading" || authState.status === "unknown", [authState]);
 
   const value = useMemo(

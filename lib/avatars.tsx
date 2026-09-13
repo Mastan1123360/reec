@@ -17,6 +17,26 @@ export interface AvatarOption {
   svgIcon: (className?: string) => React.ReactNode;
 }
 
+function renderAvatarImg(src: string, alt: string, className = "w-6 h-6") {
+  return (
+    <div
+      className={`relative overflow-hidden rounded-full shrink-0 aspect-square select-none pointer-events-none ${className}`}
+      style={{ minWidth: 0, minHeight: 0, maxWidth: "100%", maxHeight: "100%" }}
+    >
+      <img
+        src={src}
+        alt={alt}
+        width={64}
+        height={64}
+        className="w-full h-full max-w-full max-h-full object-cover block select-none pointer-events-none"
+        style={{ width: "100%", height: "100%", maxWidth: "100%", maxHeight: "100%", objectFit: "cover" }}
+        referrerPolicy="no-referrer"
+        loading="eager"
+      />
+    </div>
+  );
+}
+
 export const AVATAR_OPTIONS: AvatarOption[] = [
   // ==========================================
   // MALE PROFILES
@@ -31,16 +51,7 @@ export const AVATAR_OPTIONS: AvatarOption[] = [
     accentHex: "#2563eb",
     bgHex: "#eff6ff",
     imageSrc: "/avatars/male-alex.png",
-    svgIcon: (className = "w-6 h-6") => (
-      <div className={`relative overflow-hidden rounded-full shrink-0 ${className}`}>
-        <img
-          src="/avatars/male-alex.png"
-          alt="Alex"
-          className="w-full h-full object-cover select-none pointer-events-none"
-          referrerPolicy="no-referrer"
-        />
-      </div>
-    ),
+    svgIcon: (className = "w-6 h-6") => renderAvatarImg("/avatars/male-alex.png", "Alex", className),
   },
   {
     id: "human-male-marcus",
@@ -52,16 +63,7 @@ export const AVATAR_OPTIONS: AvatarOption[] = [
     accentHex: "#ea580c",
     bgHex: "#fff7ed",
     imageSrc: "/avatars/male-marcus.png",
-    svgIcon: (className = "w-6 h-6") => (
-      <div className={`relative overflow-hidden rounded-full shrink-0 ${className}`}>
-        <img
-          src="/avatars/male-marcus.png"
-          alt="Marcus"
-          className="w-full h-full object-cover select-none pointer-events-none"
-          referrerPolicy="no-referrer"
-        />
-      </div>
-    ),
+    svgIcon: (className = "w-6 h-6") => renderAvatarImg("/avatars/male-marcus.png", "Marcus", className),
   },
   {
     id: "human-male-david",
@@ -73,16 +75,7 @@ export const AVATAR_OPTIONS: AvatarOption[] = [
     accentHex: "#059669",
     bgHex: "#ecfdf5",
     imageSrc: "/avatars/male-david.png",
-    svgIcon: (className = "w-6 h-6") => (
-      <div className={`relative overflow-hidden rounded-full shrink-0 ${className}`}>
-        <img
-          src="/avatars/male-david.png"
-          alt="David"
-          className="w-full h-full object-cover select-none pointer-events-none"
-          referrerPolicy="no-referrer"
-        />
-      </div>
-    ),
+    svgIcon: (className = "w-6 h-6") => renderAvatarImg("/avatars/male-david.png", "David", className),
   },
   {
     id: "human-male-ryan",
@@ -94,16 +87,7 @@ export const AVATAR_OPTIONS: AvatarOption[] = [
     accentHex: "#7c3aed",
     bgHex: "#f5f3ff",
     imageSrc: "/avatars/male-ryan.png",
-    svgIcon: (className = "w-6 h-6") => (
-      <div className={`relative overflow-hidden rounded-full shrink-0 ${className}`}>
-        <img
-          src="/avatars/male-ryan.png"
-          alt="Ryan"
-          className="w-full h-full object-cover select-none pointer-events-none"
-          referrerPolicy="no-referrer"
-        />
-      </div>
-    ),
+    svgIcon: (className = "w-6 h-6") => renderAvatarImg("/avatars/male-ryan.png", "Ryan", className),
   },
 
   // ==========================================
@@ -119,16 +103,7 @@ export const AVATAR_OPTIONS: AvatarOption[] = [
     accentHex: "#0284c7",
     bgHex: "#eff6ff",
     imageSrc: "/avatars/female-ava.png",
-    svgIcon: (className = "w-6 h-6") => (
-      <div className={`relative overflow-hidden rounded-full shrink-0 ${className}`}>
-        <img
-          src="/avatars/female-ava.png"
-          alt="Ava"
-          className="w-full h-full object-cover select-none pointer-events-none"
-          referrerPolicy="no-referrer"
-        />
-      </div>
-    ),
+    svgIcon: (className = "w-6 h-6") => renderAvatarImg("/avatars/female-ava.png", "Ava", className),
   },
   {
     id: "human-female-maya",
@@ -140,16 +115,7 @@ export const AVATAR_OPTIONS: AvatarOption[] = [
     accentHex: "#f97316",
     bgHex: "#fff7ed",
     imageSrc: "/avatars/female-maya.png",
-    svgIcon: (className = "w-6 h-6") => (
-      <div className={`relative overflow-hidden rounded-full shrink-0 ${className}`}>
-        <img
-          src="/avatars/female-maya.png"
-          alt="Maya"
-          className="w-full h-full object-cover select-none pointer-events-none"
-          referrerPolicy="no-referrer"
-        />
-      </div>
-    ),
+    svgIcon: (className = "w-6 h-6") => renderAvatarImg("/avatars/female-maya.png", "Maya", className),
   },
   {
     id: "human-female-sara",
@@ -161,16 +127,7 @@ export const AVATAR_OPTIONS: AvatarOption[] = [
     accentHex: "#10b981",
     bgHex: "#f0fdf4",
     imageSrc: "/avatars/female-sara.png",
-    svgIcon: (className = "w-6 h-6") => (
-      <div className={`relative overflow-hidden rounded-full shrink-0 ${className}`}>
-        <img
-          src="/avatars/female-sara.png"
-          alt="Sara"
-          className="w-full h-full object-cover select-none pointer-events-none"
-          referrerPolicy="no-referrer"
-        />
-      </div>
-    ),
+    svgIcon: (className = "w-6 h-6") => renderAvatarImg("/avatars/female-sara.png", "Sara", className),
   },
   {
     id: "human-female-lily",
@@ -182,16 +139,7 @@ export const AVATAR_OPTIONS: AvatarOption[] = [
     accentHex: "#a855f7",
     bgHex: "#faf5ff",
     imageSrc: "/avatars/female-lily.png",
-    svgIcon: (className = "w-6 h-6") => (
-      <div className={`relative overflow-hidden rounded-full shrink-0 ${className}`}>
-        <img
-          src="/avatars/female-lily.png"
-          alt="Lily"
-          className="w-full h-full object-cover select-none pointer-events-none"
-          referrerPolicy="no-referrer"
-        />
-      </div>
-    ),
+    svgIcon: (className = "w-6 h-6") => renderAvatarImg("/avatars/female-lily.png", "Lily", className),
   },
 ];
 
