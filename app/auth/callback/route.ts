@@ -1,15 +1,21 @@
 /**
  * app/auth/callback/route.ts
  *
- * REEC Canonical Auth Callback Route Handler.
+ * REEC Flawless Canonical Auth Callback Route Handler.
  *
- * Exchanges Supabase OAuth authorization codes for authenticated sessions.
- * Guarantees:
- *  1. Exchanges authorization code with Supabase via createClient / exchangeCodeForSession.
- *  2. Inspects both searchParams (query) and hash fragments (#access_token, #error) on the client side.
- *  3. In iframe/popup flows, notifies opener window via postMessage (OAUTH_AUTH_SUCCESS or OAUTH_AUTH_ERROR) and closes cleanly.
- *  4. In direct navigation flows, seamlessly redirects to the safe internal path.
- *  5. Gracefully handles OAuth cancellation, provider denial, or network hiccups with clear visual feedback.
+ * Exchanges Supabase OAuth authorization codes for authenticated sessions across all
+ * environments (Iframe previews, popups, full-page mobile redirects, cross-tab BroadcastChannel).
+ *
+ * Resilient Architecture:
+ *  1. Server-side exchange: Leverages cookies if available.
+ *  2. Client-side fallback: In browser context, exchanges PKCE code via Supabase REST API using
+ *     code_verifier stored in localStorage / cookies.
+ *  3. Hash fragment fallback: Extracts implicit tokens (#access_token, #refresh_token).
+ *  4. Cancellation handling: Gracefully notifies opener window of user cancellation (access_denied)
+ *     without error alerts or hanging spinners.
+ *  5. Instant session & profile persistence: Writes session to localStorage and cookies, pre-seeds
+ *     profile cache, and notifies via postMessage and BroadcastChannel.
+ *  6. Auto-closes popup window or redirects to internal safe path.
  */
 
 import { NextResponse, type NextRequest } from "next/server";
@@ -26,35 +32,44 @@ export async function GET(request: NextRequest) {
   const rawNext = requestUrl.searchParams.get("next");
   const safeNext = sanitizeInternalRedirect(rawNext);
   const queryError = requestUrl.searchParams.get("error");
+  const queryErrorCode = requestUrl.searchParams.get("error_code");
   const queryErrorDescription =
-    requestUrl.searchParams.get("error_description") ||
-    requestUrl.searchParams.get("error_code") ||
-    queryError;
+    requestUrl.searchParams.get("error_description") || queryErrorCode || queryError;
+
+  const isUserCancellation =
+    queryError === "access_denied" ||
+    queryErrorCode === "access_denied" ||
+    (queryErrorDescription && queryErrorDescription.toLowerCase().includes("user denied"));
 
   let sessionData: any | null = null;
-  let authError: string | null = queryErrorDescription || null;
+  let serverAuthError: string | null = isUserCancellation ? null : queryErrorDescription || null;
 
-  if (code || tokenHash) {
-    const supabaseUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "").trim();
-    const supabaseAnonKey = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || "").trim();
+  const supabaseUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "").trim();
+  const supabaseAnonKey = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || "").trim();
 
-    if (!supabaseUrl || !supabaseAnonKey) {
-      console.error("[Auth Callback] Missing Supabase URL or Anon Key in environment");
-      authError = "Authentication service configuration missing.";
-    } else {
-      try {
-      const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  // Attempt server-side exchange if credentials and code/token exist
+  if ((code || tokenHash) && supabaseUrl && supabaseAnonKey) {
+    try {
+      const cookieStore = new Map<string, string>();
+      request.cookies.getAll().forEach((c) => cookieStore.set(c.name, c.value));
+
+      const serverSupabase = createClient(supabaseUrl, supabaseAnonKey, {
         auth: {
-          persistSession: true,
-          autoRefreshToken: true,
+          persistSession: false,
+          autoRefreshToken: false,
+          storage: {
+            getItem: (key: string) => cookieStore.get(key) || null,
+            setItem: () => {},
+            removeItem: () => {},
+          },
         },
       });
 
       if (code) {
-        const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+        const { data, error } = await serverSupabase.auth.exchangeCodeForSession(code);
         if (error) {
-          console.warn("[Auth Callback] Error exchanging code for session:", error.message);
-          authError = error.message;
+          // Do not fail immediately on server; client-side browser will attempt PKCE exchange with local storage
+          console.warn("[OAuth Callback] Server-side exchange note:", error.message);
         } else if (data?.session) {
           sessionData = {
             access_token: data.session.access_token,
@@ -66,14 +81,11 @@ export async function GET(request: NextRequest) {
           };
         }
       } else if (tokenHash && type) {
-        const { data, error } = await supabase.auth.verifyOtp({
+        const { data, error } = await serverSupabase.auth.verifyOtp({
           token_hash: tokenHash,
           type: type as any,
         });
-        if (error) {
-          console.warn("[Auth Callback] Error verifying token_hash OTP:", error.message);
-          authError = error.message;
-        } else if (data?.session) {
+        if (!error && data?.session) {
           sessionData = {
             access_token: data.session.access_token,
             refresh_token: data.session.refresh_token,
@@ -85,16 +97,13 @@ export async function GET(request: NextRequest) {
         }
       }
     } catch (err) {
-      console.warn("[Auth Callback] Unexpected error during authentication exchange:", (err as Error).message);
-      authError = (err as Error).message;
-    }
+      console.warn("[OAuth Callback] Server auth error:", (err as Error).message);
     }
   }
 
   const origin = getOriginFromRequest(request);
   const redirectDestination = new URL(safeNext, origin).toString();
 
-  const supabaseUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "").trim();
   let storageKey = "sb-auth-token";
   try {
     if (supabaseUrl) {
@@ -111,6 +120,7 @@ export async function GET(request: NextRequest) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>REEC Cloud Authentication</title>
     <style>
+      * { box-sizing: border-box; }
       body {
         margin: 0;
         padding: 0;
@@ -125,28 +135,26 @@ export async function GET(request: NextRequest) {
       .card {
         background: #111a2e;
         border: 1px solid rgba(255, 255, 255, 0.1);
-        padding: 2.25rem;
+        padding: 2.5rem 2rem;
         border-radius: 1.25rem;
         text-align: center;
-        max-width: 420px;
+        max-width: 400px;
         width: 90%;
-        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
       }
       .spinner {
-        width: 34px;
-        height: 34px;
-        border: 3px solid rgba(255, 255, 255, 0.1);
-        border-top-color: #3b82f6;
+        width: 36px;
+        height: 36px;
+        border: 3px solid rgba(255, 255, 255, 0.12);
+        border-top-color: #38bdf8;
         border-radius: 50%;
-        animation: spin 0.8s linear infinite;
+        animation: spin 0.75s linear infinite;
         margin: 0 auto 1.25rem;
       }
-      .error-icon {
-        width: 40px;
-        height: 40px;
+      .icon-box {
+        width: 44px;
+        height: 44px;
         border-radius: 50%;
-        background: rgba(239, 68, 68, 0.15);
-        color: #ef4444;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -154,31 +162,48 @@ export async function GET(request: NextRequest) {
         font-size: 20px;
         font-weight: bold;
       }
+      .icon-error {
+        background: rgba(239, 68, 68, 0.15);
+        color: #ef4444;
+        border: 1px solid rgba(239, 68, 68, 0.3);
+      }
+      .icon-success {
+        background: rgba(34, 197, 94, 0.15);
+        color: #22c55e;
+        border: 1px solid rgba(34, 197, 94, 0.3);
+      }
+      .icon-info {
+        background: rgba(56, 189, 248, 0.15);
+        color: #38bdf8;
+        border: 1px solid rgba(56, 189, 248, 0.3);
+      }
       @keyframes spin {
         to { transform: rotate(360deg); }
       }
       h2 {
-        font-size: 17px;
+        font-size: 18px;
         font-weight: 700;
         margin: 0 0 8px;
+        letter-spacing: -0.01em;
       }
       p {
         font-size: 13px;
         color: #94a3b8;
-        margin: 0 0 1rem;
+        margin: 0 0 1.25rem;
         line-height: 1.5;
       }
       .btn {
         display: inline-block;
         background: #2563eb;
         color: #ffffff;
-        padding: 0.6rem 1.25rem;
+        padding: 0.65rem 1.5rem;
         border-radius: 0.75rem;
-        font-size: 12px;
+        font-size: 13px;
         font-weight: 600;
         text-decoration: none;
         cursor: pointer;
         border: none;
+        transition: background 0.15s ease;
       }
       .btn:hover {
         background: #1d4ed8;
@@ -188,209 +213,258 @@ export async function GET(request: NextRequest) {
   <body>
     <div class="card" id="status-card">
       <div class="spinner" id="spinner"></div>
-      <div class="error-icon" id="error-icon" style="display: none;">!</div>
+      <div class="icon-box icon-error" id="error-icon" style="display: none;">!</div>
+      <div class="icon-box icon-success" id="success-icon" style="display: none;">✓</div>
+      <div class="icon-box icon-info" id="info-icon" style="display: none;">i</div>
       <h2 id="title">Authenticating with REEC Cloud</h2>
       <p id="message">Synchronizing your credentials and returning to app...</p>
       <button class="btn" id="action-btn" style="display: none;" onclick="window.close()">Close Window</button>
     </div>
+
     <script>
-      (function() {
+      (async function() {
         var serverSession = ${JSON.stringify(sessionData)};
-        var serverError = ${JSON.stringify(authError)};
+        var serverError = ${JSON.stringify(serverAuthError)};
+        var isCancelled = ${JSON.stringify(isUserCancellation)};
+        var code = ${JSON.stringify(code)};
         var safeNext = ${JSON.stringify(safeNext)};
         var redirectDestination = ${JSON.stringify(redirectDestination)};
+        var supabaseUrl = ${JSON.stringify(supabaseUrl)};
+        var supabaseAnonKey = ${JSON.stringify(supabaseAnonKey)};
+        var storageKey = ${JSON.stringify(storageKey)};
 
-        // Parse hash fragment in case tokens were passed implicitly (#access_token=...)
-        var hash = window.location.hash ? window.location.hash.substring(1) : "";
-        var hashParams = new URLSearchParams(hash);
-        var hashAccessToken = hashParams.get("access_token");
-        var hashRefreshToken = hashParams.get("refresh_token");
-        var hashError = hashParams.get("error_description") || hashParams.get("error");
+        var spinner = document.getElementById("spinner");
+        var errorIcon = document.getElementById("error-icon");
+        var successIcon = document.getElementById("success-icon");
+        var infoIcon = document.getElementById("info-icon");
+        var title = document.getElementById("title");
+        var message = document.getElementById("message");
+        var actionBtn = document.getElementById("action-btn");
 
-        var finalSession = serverSession;
-        if (!finalSession && hashAccessToken && hashRefreshToken) {
-          finalSession = {
-            access_token: hashAccessToken,
-            refresh_token: hashRefreshToken,
-            expires_in: 3600,
-            expires_at: Math.floor(Date.now() / 1000) + 3600,
-            token_type: "bearer",
-            user: {
-              id: hashParams.get("user_id") || "oauth-user",
-              email: hashParams.get("email") || null,
-              app_metadata: { provider: "oauth" },
-              user_metadata: {}
+        // Helper to notify opener or parent frame
+        function notifyOpener(msg) {
+          try {
+            if (window.opener && !window.opener.closed) {
+              window.opener.postMessage(msg, "*");
             }
-          };
+          } catch (e) {}
+          try {
+            if (window.parent && window.parent !== window) {
+              window.parent.postMessage(msg, "*");
+            }
+          } catch (e) {}
         }
 
-        var finalError = serverError || hashError;
-
-        if (finalError) {
-          document.getElementById("spinner").style.display = "none";
-          document.getElementById("error-icon").style.display = "flex";
-          document.getElementById("title").innerText = "Authentication Incomplete";
-          document.getElementById("message").innerText = finalError || "The authentication request was not completed.";
-          document.getElementById("action-btn").style.display = "inline-block";
-
-          if (window.opener && !window.opener.closed) {
-            try {
-              window.opener.postMessage({
-                type: "OAUTH_AUTH_ERROR",
-                error: finalError
-              }, "*");
-            } catch (e) {}
-          }
+        // Handle user cancellation gracefully
+        if (isCancelled) {
+          spinner.style.display = "none";
+          infoIcon.style.display = "flex";
+          title.innerText = "Sign-In Cancelled";
+          message.innerText = "You cancelled the authorization request. You can safely close this window.";
+          actionBtn.style.display = "inline-block";
+          notifyOpener({ type: "OAUTH_AUTH_CANCEL" });
+          setTimeout(function() {
+            try { window.close(); } catch (e) {}
+          }, 1200);
           return;
         }
 
+        var finalSession = serverSession;
+
+        // Fallback 1: Direct PKCE code exchange in browser context with localStorage code_verifier
+        if (!finalSession && code && supabaseUrl && supabaseAnonKey) {
+          try {
+            var codeVerifier = null;
+            // Search localStorage
+            for (var i = 0; i < localStorage.length; i++) {
+              var k = localStorage.key(i);
+              if (k && k.includes("code-verifier")) {
+                codeVerifier = localStorage.getItem(k);
+                break;
+              }
+            }
+            // Fallback: search cookies
+            if (!codeVerifier && document.cookie) {
+              var cookieParts = document.cookie.split("; ");
+              for (var j = 0; j < cookieParts.length; j++) {
+                var pair = cookieParts[j].split("=");
+                if (pair[0] && pair[0].includes("code-verifier")) {
+                  codeVerifier = decodeURIComponent(pair[1] || "");
+                  break;
+                }
+              }
+            }
+
+            if (codeVerifier) {
+              var res = await fetch(supabaseUrl + "/auth/v1/token?grant_type=pkce", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "apikey": supabaseAnonKey,
+                },
+                body: JSON.stringify({
+                  auth_code: code,
+                  code_verifier: codeVerifier,
+                }),
+              });
+              if (res.ok) {
+                var data = await res.json();
+                if (data && data.access_token) {
+                  finalSession = data;
+                }
+              }
+            }
+          } catch (exchangeErr) {
+            console.warn("[OAuth Callback] Client PKCE exchange error:", exchangeErr);
+          }
+        }
+
+        // Fallback 2: Hash fragment implicit token parsing
+        if (!finalSession) {
+          var hash = window.location.hash ? window.location.hash.substring(1) : "";
+          if (hash) {
+            var hashParams = new URLSearchParams(hash);
+            var hashAccessToken = hashParams.get("access_token");
+            var hashRefreshToken = hashParams.get("refresh_token");
+            var hashError = hashParams.get("error_description") || hashParams.get("error");
+
+            if (hashError) {
+              serverError = hashError;
+            } else if (hashAccessToken && hashRefreshToken) {
+              finalSession = {
+                access_token: hashAccessToken,
+                refresh_token: hashRefreshToken,
+                expires_in: Number(hashParams.get("expires_in") || 3600),
+                expires_at: Math.floor(Date.now() / 1000) + Number(hashParams.get("expires_in") || 3600),
+                token_type: hashParams.get("token_type") || "bearer",
+                user: {
+                  id: hashParams.get("user_id") || "oauth-user",
+                  email: hashParams.get("email") || null,
+                  app_metadata: { provider: hashParams.get("provider") || "oauth" },
+                  user_metadata: {},
+                },
+              };
+            }
+          }
+        }
+
+        // Handle error state
+        if (!finalSession && serverError) {
+          spinner.style.display = "none";
+          errorIcon.style.display = "flex";
+          title.innerText = "Authentication Incomplete";
+          message.innerText = serverError;
+          actionBtn.style.display = "inline-block";
+          notifyOpener({ type: "OAUTH_AUTH_ERROR", error: serverError });
+          return;
+        }
+
+        // Success state
         if (finalSession) {
-          // 1. Authoritative storage persistence across device formats (Laptop/Mobile/Tablet)
           try {
             var serialized = JSON.stringify(finalSession);
-            var storageKey = ${JSON.stringify(storageKey)};
             localStorage.setItem(storageKey, serialized);
             localStorage.setItem("sb-auth-token", serialized);
             localStorage.setItem("reec_oauth_session", serialized);
 
-            // Pre-seed per-user profile cache so the target page renders all profile details with 0ms delay
+            // Pre-seed deterministic profile caches for 0ms initial render
             var u = finalSession.user;
             if (u && u.id) {
               var meta = u.user_metadata || {};
               var idData = (u.identities && u.identities[0] && u.identities[0].identity_data) || {};
-              var dName = meta.full_name || meta.name || meta.display_name || idData.full_name || idData.name || (meta.given_name ? (meta.given_name + " " + (meta.family_name || "")).trim() : null) || (u.email ? u.email.split("@")[0] : "Learner");
-              var uName = meta.username || meta.user_name || meta.preferred_username || idData.user_name || idData.preferred_username || idData.login || (u.email ? u.email.split("@")[0].replace(/[^a-zA-Z0-9_]/g, "") : "learner");
-              var avId = meta.avatar_id || idData.avatar_id || "human-male-alex";
-              var gen = (meta.gender === "female" || idData.gender === "female") ? "female" : "male";
+              var dName =
+                meta.full_name ||
+                meta.name ||
+                meta.display_name ||
+                idData.full_name ||
+                idData.name ||
+                (u.email ? u.email.split("@")[0] : "Learner");
+              var uName =
+                meta.username ||
+                meta.user_name ||
+                meta.preferred_username ||
+                idData.user_name ||
+                idData.preferred_username ||
+                idData.login ||
+                (u.email ? u.email.split("@")[0].replace(/[^a-zA-Z0-9_]/g, "_") : "learner");
+              var avId = meta.avatar_id || idData.avatar_id || "avatar-alex";
+              var gen = meta.gender === "female" || idData.gender === "female" ? "female" : "male";
 
               localStorage.setItem("reec_display_name_" + u.id, dName);
               localStorage.setItem("reec_username_" + u.id, uName);
               localStorage.setItem("reec_avatar_id_" + u.id, avId);
               localStorage.setItem("reec_gender_" + u.id, gen);
               localStorage.setItem("reec_persisted_username", uName);
-              localStorage.setItem("reec_selected_avatar", avId);
-              localStorage.setItem("reec_selected_gender", gen);
             }
           } catch (e) {
-            console.warn("[Auth Callback] LocalStorage write warning:", e);
+            console.warn("[OAuth Callback] Storage write warning:", e);
           }
 
-          // 2. Browser cookies for session continuity across iframes & full redirects
+          // Cookie persistence for seamless session across iframes
           try {
             var enc = encodeURIComponent(JSON.stringify(finalSession));
             document.cookie = storageKey + "=" + enc + "; path=/; max-age=31536000; SameSite=None; Secure";
             document.cookie = "sb-auth-token=" + enc + "; path=/; max-age=31536000; SameSite=None; Secure";
           } catch (e) {}
 
-          // 3. Multi-tab/multi-window synchronization via BroadcastChannel
+          // BroadcastChannel multi-tab synchronization
           try {
             if (typeof BroadcastChannel !== "undefined") {
               var authChannel = new BroadcastChannel("reec_auth_sync");
               authChannel.postMessage({
                 type: "OAUTH_AUTH_SUCCESS",
                 session: finalSession,
-                next: safeNext
+                next: safeNext,
               });
             }
           } catch (e) {}
 
-          // 4. PostMessage to opener window (Laptop / Desktop popup flow)
-          var hasOpener = false;
+          // postMessage to opener and parent
+          notifyOpener({
+            type: "OAUTH_AUTH_SUCCESS",
+            session: finalSession,
+            next: safeNext,
+          });
+
+          spinner.style.display = "none";
+          successIcon.style.display = "flex";
+          title.innerText = "Signed In Successfully";
+          message.innerText = "Returning to REEC Academy...";
+
+          var isPopup = false;
           try {
-            hasOpener = Boolean(window.opener && !window.opener.closed);
+            isPopup = Boolean(window.opener && !window.opener.closed);
           } catch (e) {
-            hasOpener = false;
+            isPopup = false;
           }
 
-          if (hasOpener) {
-            try {
-              window.opener.postMessage({
-                type: "OAUTH_AUTH_SUCCESS",
-                session: finalSession,
-                next: safeNext
-              }, "*");
-              document.getElementById("title").innerText = "Authentication Successful";
-              document.getElementById("message").innerText = "Signed in! Returning to REEC Academy...";
-              setTimeout(function() {
-                try {
-                  window.close();
-                } catch (e) {}
-              }, 50);
-              return;
-            } catch (e) {
-              console.warn("[Auth Callback] postMessage failed:", e);
-            }
-          }
-
-          // 5. PostMessage to parent frame (if running in iframe)
-          try {
-            if (window.parent && window.parent !== window) {
-              window.parent.postMessage({
-                type: "OAUTH_AUTH_SUCCESS",
-                session: finalSession,
-                next: safeNext
-              }, "*");
-            }
-          } catch (e) {}
-
-          // 6. Direct navigation / Mobile / Tablet redirect flow
-          document.getElementById("title").innerText = "Authentication Successful";
-          document.getElementById("message").innerText = "Signed in! Returning to REEC Academy...";
-          try {
-            sessionStorage.setItem("reec_instant_auth", "true");
-            window.dispatchEvent(new CustomEvent("reec_auth_success", { detail: finalSession }));
-          } catch (e) {}
-          window.location.replace(redirectDestination);
-        } else {
-          // No session and no explicit error
-          if (window.opener && !window.opener.closed) {
-            try {
-              window.opener.postMessage({
-                type: "OAUTH_AUTH_ERROR",
-                error: "No authorization session received. Please try again."
-              }, "*");
-              setTimeout(function() {
-                window.close();
-              }, 600);
-            } catch (e) {
-              window.location.replace(redirectDestination);
-            }
+          if (isPopup) {
+            setTimeout(function() {
+              try { window.close(); } catch (e) {}
+            }, 300);
           } else {
-            window.location.replace(redirectDestination);
+            setTimeout(function() {
+              window.location.replace(redirectDestination);
+            }, 400);
           }
+        } else {
+          // No session received and no explicit error
+          spinner.style.display = "none";
+          errorIcon.style.display = "flex";
+          title.innerText = "Authentication Incomplete";
+          message.innerText = "No authorization session could be established. Please try again.";
+          actionBtn.style.display = "inline-block";
+          notifyOpener({ type: "OAUTH_AUTH_ERROR", error: "No authorization session established." });
         }
       })();
     </script>
   </body>
 </html>`;
 
-  const response = new NextResponse(responseHtml, {
-    status: 200,
+  return new NextResponse(responseHtml, {
     headers: {
       "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store, max-age=0",
     },
   });
-
-  if (sessionData) {
-    try {
-      const serialized = JSON.stringify(sessionData);
-      response.cookies.set(storageKey, serialized, {
-        path: "/",
-        maxAge: 31536000,
-        sameSite: "none",
-        secure: true,
-        httpOnly: false,
-      });
-      response.cookies.set("sb-auth-token", serialized, {
-        path: "/",
-        maxAge: 31536000,
-        sameSite: "none",
-        secure: true,
-        httpOnly: false,
-      });
-    } catch {}
-  }
-
-  return response;
 }
-

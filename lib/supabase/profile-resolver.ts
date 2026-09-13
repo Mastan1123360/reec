@@ -106,12 +106,7 @@ export function resolveInstantProfile(user: SupabaseAuthUserLike): UserProfile {
   if (!resolvedDisplayName && email && email.includes("@")) {
     const emailPrefix = email.split("@")[0].trim();
     if (emailPrefix) {
-      // Capitalize nicely: e.g. "alex.miller" -> "Alex Miller"
-      const formatted = emailPrefix
-        .split(/[._-]/)
-        .map((s) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase())
-        .join(" ");
-      resolvedDisplayName = formatted || emailPrefix;
+      resolvedDisplayName = emailPrefix;
     }
   }
 

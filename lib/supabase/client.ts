@@ -23,6 +23,57 @@ export const isSupabaseConfigured = (): boolean => {
   return Boolean(url && key && !url.includes("your-project") && !key.includes("your-anon-key"));
 };
 
+export const dualAuthStorage = {
+  getItem: (key: string): string | null => {
+    if (typeof window === "undefined") return null;
+    try {
+      const local = window.localStorage.getItem(key);
+      if (local !== null) return local;
+    } catch {}
+
+    try {
+      if (document.cookie) {
+        const cookies = document.cookie.split("; ");
+        for (const cookie of cookies) {
+          const eqIdx = cookie.indexOf("=");
+          if (eqIdx !== -1) {
+            const k = cookie.slice(0, eqIdx);
+            if (k === key) {
+              const v = cookie.slice(eqIdx + 1);
+              return decodeURIComponent(v);
+            }
+          }
+        }
+      }
+    } catch {}
+    return null;
+  },
+
+  setItem: (key: string, value: string): void => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(key, value);
+    } catch {}
+
+    try {
+      const encoded = encodeURIComponent(value);
+      // SameSite=None; Secure is required for cross-origin iframes (AI Studio preview environment)
+      document.cookie = `${key}=${encoded}; path=/; max-age=31536000; SameSite=None; Secure`;
+    } catch {}
+  },
+
+  removeItem: (key: string): void => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.removeItem(key);
+    } catch {}
+
+    try {
+      document.cookie = `${key}=; path=/; max-age=0; SameSite=None; Secure`;
+    } catch {}
+  },
+};
+
 let clientInstance: SupabaseClient<Database> | null = null;
 
 export function getSupabaseClient(): SupabaseClient<Database> | null {
@@ -35,7 +86,8 @@ export function getSupabaseClient(): SupabaseClient<Database> | null {
         persistSession: true,
         autoRefreshToken: true,
         detectSessionInUrl: true,
-        flowType: "implicit",
+        flowType: "pkce",
+        storage: typeof window !== "undefined" ? dualAuthStorage : undefined,
       },
       global: {
         fetch: (...args) => globalThis.fetch(...args),
