@@ -86,7 +86,7 @@ export function getSupabaseClient(): SupabaseClient<Database> | null {
         persistSession: true,
         autoRefreshToken: true,
         detectSessionInUrl: true,
-        flowType: "pkce",
+        flowType: "implicit",
         storage: typeof window !== "undefined" ? dualAuthStorage : undefined,
       },
       global: {

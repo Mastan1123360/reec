@@ -51,7 +51,12 @@ export async function GET(request: NextRequest) {
   if ((code || tokenHash) && supabaseUrl && supabaseAnonKey) {
     try {
       const cookieStore = new Map<string, string>();
-      request.cookies.getAll().forEach((c) => cookieStore.set(c.name, c.value));
+      request.cookies.getAll().forEach((c) => {
+        cookieStore.set(c.name, c.value);
+        try {
+          cookieStore.set(c.name, decodeURIComponent(c.value));
+        } catch {}
+      });
 
       const serverSupabase = createClient(supabaseUrl, supabaseAnonKey, {
         auth: {
@@ -271,7 +276,68 @@ export async function GET(request: NextRequest) {
 
         var finalSession = serverSession;
 
-        // Fallback 1: Direct PKCE code exchange in browser context with localStorage code_verifier
+        // Priority 1: Hash fragment implicit token parsing (Standard Supabase OAuth flow)
+        if (!finalSession) {
+          var hash = window.location.hash ? window.location.hash.substring(1) : "";
+          if (hash) {
+            var hashParams = new URLSearchParams(hash);
+            var hashAccessToken = hashParams.get("access_token");
+            var hashRefreshToken = hashParams.get("refresh_token");
+            var hashError = hashParams.get("error_description") || hashParams.get("error");
+
+            if (hashError) {
+              serverError = hashError;
+            } else if (hashAccessToken && hashRefreshToken) {
+              var userObj = null;
+              // Decode user details directly from access token JWT claims
+              try {
+                var payloadBase64 = hashAccessToken.split(".")[1];
+                var decodedJson = atob(payloadBase64.replace(/-/g, "+").replace(/_/g, "/"));
+                var payload = JSON.parse(decodedJson);
+                userObj = {
+                  id: payload.sub || "oauth-user",
+                  email: payload.email || null,
+                  app_metadata: payload.app_metadata || { provider: hashParams.get("provider") || "oauth" },
+                  user_metadata: payload.user_metadata || {},
+                };
+              } catch (jwtErr) {}
+
+              // Hydrate full authoritative user profile from Supabase API if possible
+              if (supabaseUrl && supabaseAnonKey) {
+                try {
+                  var uRes = await fetch(supabaseUrl + "/auth/v1/user", {
+                    headers: {
+                      "apikey": supabaseAnonKey,
+                      "Authorization": "Bearer " + hashAccessToken,
+                    },
+                  });
+                  if (uRes.ok) {
+                    var uData = await uRes.json();
+                    if (uData && uData.id) {
+                      userObj = uData;
+                    }
+                  }
+                } catch (uErr) {}
+              }
+
+              finalSession = {
+                access_token: hashAccessToken,
+                refresh_token: hashRefreshToken,
+                expires_in: Number(hashParams.get("expires_in") || 3600),
+                expires_at: Math.floor(Date.now() / 1000) + Number(hashParams.get("expires_in") || 3600),
+                token_type: hashParams.get("token_type") || "bearer",
+                user: userObj || {
+                  id: "oauth-user",
+                  email: null,
+                  app_metadata: { provider: hashParams.get("provider") || "oauth" },
+                  user_metadata: {},
+                },
+              };
+            }
+          }
+        }
+
+        // Priority 2: Direct PKCE code exchange in browser context with localStorage code_verifier
         if (!finalSession && code && supabaseUrl && supabaseAnonKey) {
           try {
             var codeVerifier = null;
@@ -319,32 +385,59 @@ export async function GET(request: NextRequest) {
           }
         }
 
-        // Fallback 2: Hash fragment implicit token parsing
-        if (!finalSession) {
-          var hash = window.location.hash ? window.location.hash.substring(1) : "";
-          if (hash) {
-            var hashParams = new URLSearchParams(hash);
-            var hashAccessToken = hashParams.get("access_token");
-            var hashRefreshToken = hashParams.get("refresh_token");
-            var hashError = hashParams.get("error_description") || hashParams.get("error");
+        // Priority 3: Opener-assisted code exchange (for iframe / cross-origin popup environments)
+        if (!finalSession && code) {
+          try {
+            var openerSession = await new Promise(function(resolve) {
+              var done = false;
+              function onMsg(ev) {
+                if (done) return;
+                if (ev.data && ev.data.type === "OAUTH_SESSION_EXCHANGED" && ev.data.session) {
+                  done = true;
+                  window.removeEventListener("message", onMsg);
+                  resolve(ev.data.session);
+                } else if (ev.data && ev.data.type === "OAUTH_EXCHANGE_FAILED") {
+                  done = true;
+                  window.removeEventListener("message", onMsg);
+                  if (ev.data.error) serverError = ev.data.error;
+                  resolve(null);
+                }
+              }
+              window.addEventListener("message", onMsg);
 
-            if (hashError) {
-              serverError = hashError;
-            } else if (hashAccessToken && hashRefreshToken) {
-              finalSession = {
-                access_token: hashAccessToken,
-                refresh_token: hashRefreshToken,
-                expires_in: Number(hashParams.get("expires_in") || 3600),
-                expires_at: Math.floor(Date.now() / 1000) + Number(hashParams.get("expires_in") || 3600),
-                token_type: hashParams.get("token_type") || "bearer",
-                user: {
-                  id: hashParams.get("user_id") || "oauth-user",
-                  email: hashParams.get("email") || null,
-                  app_metadata: { provider: hashParams.get("provider") || "oauth" },
-                  user_metadata: {},
-                },
-              };
+              var bc = null;
+              try {
+                if (typeof BroadcastChannel !== "undefined") {
+                  bc = new BroadcastChannel("reec_auth_sync");
+                  bc.onmessage = function(ev) {
+                    if (done) return;
+                    if (ev.data && ev.data.type === "OAUTH_SESSION_EXCHANGED" && ev.data.session) {
+                      done = true;
+                      bc.close();
+                      resolve(ev.data.session);
+                    }
+                  };
+                  bc.postMessage({ type: "OAUTH_EXCHANGE_CODE", code: code });
+                }
+              } catch (e) {}
+
+              notifyOpener({ type: "OAUTH_EXCHANGE_CODE", code: code });
+
+              setTimeout(function() {
+                if (!done) {
+                  done = true;
+                  window.removeEventListener("message", onMsg);
+                  if (bc) { try { bc.close(); } catch (e) {} }
+                  resolve(null);
+                }
+              }, 3000);
+            });
+
+            if (openerSession) {
+              finalSession = openerSession;
             }
+          } catch (opErr) {
+            console.warn("[OAuth Callback] Opener exchange error:", opErr);
           }
         }
 
@@ -352,7 +445,7 @@ export async function GET(request: NextRequest) {
         if (!finalSession && serverError) {
           spinner.style.display = "none";
           errorIcon.style.display = "flex";
-          title.innerText = "Authentication Incomplete";
+          title.innerText = "Authentication Notice";
           message.innerText = serverError;
           actionBtn.style.display = "inline-block";
           notifyOpener({ type: "OAUTH_AUTH_ERROR", error: serverError });
@@ -451,9 +544,10 @@ export async function GET(request: NextRequest) {
           // No session received and no explicit error
           spinner.style.display = "none";
           errorIcon.style.display = "flex";
-          title.innerText = "Authentication Incomplete";
-          message.innerText = "No authorization session could be established. Please try again.";
+          title.innerText = "Authentication Notice";
+          message.innerHTML = "Authorization could not be finalized. Please ensure that redirect URLs in your Supabase project settings include: <br/><code style='display:inline-block;margin-top:8px;padding:4px 8px;background:rgba(255,255,255,0.08);border-radius:6px;font-size:12px;word-break:break-all;'>" + window.location.origin + "/auth/callback</code>";
           actionBtn.style.display = "inline-block";
+          actionBtn.innerText = "Close Window";
           notifyOpener({ type: "OAUTH_AUTH_ERROR", error: "No authorization session established." });
         }
       })();

@@ -660,6 +660,58 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           await handleAuthSession(event.data.session);
           setIsAuthModalOpen(false);
         }
+      } else if (event.data?.type === "OAUTH_EXCHANGE_CODE" && event.data?.code) {
+        // Opener-assisted code exchange: exchange authorization code using initiator's storage
+        const client = getSupabaseClient();
+        if (client) {
+          try {
+            const { data, error } = await client.auth.exchangeCodeForSession(event.data.code);
+            if (data?.session) {
+              await handleAuthSession(data.session);
+              setIsAuthModalOpen(false);
+              try {
+                if (event.source && "postMessage" in event.source) {
+                  (event.source as Window).postMessage(
+                    { type: "OAUTH_SESSION_EXCHANGED", session: data.session },
+                    "*"
+                  );
+                }
+              } catch {}
+              try {
+                if (authChannel) {
+                  authChannel.postMessage({
+                    type: "OAUTH_SESSION_EXCHANGED",
+                    session: data.session,
+                  });
+                }
+              } catch {}
+            } else if (error) {
+              try {
+                if (event.source && "postMessage" in event.source) {
+                  (event.source as Window).postMessage(
+                    { type: "OAUTH_EXCHANGE_FAILED", error: error.message },
+                    "*"
+                  );
+                }
+              } catch {}
+            }
+          } catch (exchangeErr: unknown) {
+            try {
+              if (event.source && "postMessage" in event.source) {
+                (event.source as Window).postMessage(
+                  {
+                    type: "OAUTH_EXCHANGE_FAILED",
+                    error:
+                      exchangeErr instanceof Error
+                        ? exchangeErr.message
+                        : "Failed to exchange authorization code",
+                  },
+                  "*"
+                );
+              }
+            } catch {}
+          }
+        }
       } else if (event.data?.type === "OAUTH_AUTH_CANCEL") {
         window.dispatchEvent(new CustomEvent("reec_oauth_cancel"));
       } else if (event.data?.type === "OAUTH_AUTH_ERROR") {
@@ -678,9 +730,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (typeof window !== "undefined" && "BroadcastChannel" in window) {
         authChannel = new BroadcastChannel("reec_auth_sync");
         authChannel.onmessage = async (event) => {
-          if (event.data?.type === "OAUTH_AUTH_SUCCESS" && event.data.session) {
+          if (
+            (event.data?.type === "OAUTH_AUTH_SUCCESS" ||
+              event.data?.type === "OAUTH_SESSION_EXCHANGED") &&
+            event.data.session
+          ) {
             await handleAuthSession(event.data.session);
             setIsAuthModalOpen(false);
+          } else if (event.data?.type === "OAUTH_EXCHANGE_CODE" && event.data?.code) {
+            const client = getSupabaseClient();
+            if (client) {
+              try {
+                const { data } = await client.auth.exchangeCodeForSession(event.data.code);
+                if (data?.session) {
+                  await handleAuthSession(data.session);
+                  setIsAuthModalOpen(false);
+                  authChannel?.postMessage({
+                    type: "OAUTH_SESSION_EXCHANGED",
+                    session: data.session,
+                  });
+                }
+              } catch {}
+            }
           } else if (event.data?.type === "OAUTH_AUTH_CANCEL") {
             window.dispatchEvent(new CustomEvent("reec_oauth_cancel"));
           } else if (event.data?.type === "OAUTH_AUTH_ERROR") {
