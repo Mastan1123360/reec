@@ -217,7 +217,7 @@ export function LessonFullscreenProvider({
   return (
     <FullscreenContext.Provider value={contextValue}>
       <div ref={containerRef} className="relative w-full">
-        {children}
+        {!isFullscreen ? children : <div className="min-h-[400px] w-full opacity-0 pointer-events-none" aria-hidden="true" />}
       </div>
 
       {/* Fullscreen Portal: Teleports directly to document.body to break out of all parent constraints */}

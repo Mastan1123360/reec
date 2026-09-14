@@ -1,3 +1,5 @@
+"use client";
+
 import { CONCEPT_CHAIN } from "@/lib/semantic/ontology";
 import type { ConceptNode } from "@/lib/semantic/ontology";
 import { GitBranch, ArrowRight } from "lucide-react";

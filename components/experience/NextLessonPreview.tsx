@@ -1,3 +1,5 @@
+"use client";
+
 import Link from "next/link";
 import { ArrowLeft, ArrowRight } from "lucide-react";
 import type { Lesson } from "@/lib/content/types";

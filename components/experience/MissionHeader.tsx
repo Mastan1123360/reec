@@ -66,7 +66,7 @@ export function MissionHeader({
         </p>
       )}
       {plan.missionSynopsis && (
-        <p className="mt-3.5 max-w-2xl text-sm leading-relaxed text-slate-700 dark:text-slate-300">
+        <p className="mt-3.5 max-w-2xl lg:max-w-4xl text-sm leading-relaxed text-slate-700 dark:text-slate-300">
           {plan.missionSynopsis}
         </p>
       )}

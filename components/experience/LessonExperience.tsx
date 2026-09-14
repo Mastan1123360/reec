@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * components/experience/LessonExperience.tsx
  *
