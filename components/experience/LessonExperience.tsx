@@ -17,8 +17,6 @@
  * templated identically for all of them.
  */
 
-"use client";
-
 import * as React from "react";
 import { buildSemanticModel } from "@/lib/semantic/model";
 import { interpretLesson } from "@/lib/semantic/interpreter";
@@ -44,23 +42,17 @@ export function LessonExperience({ lesson, prevLesson, nextLesson }: LessonExper
   const model = buildSemanticModel(lesson);
   const plan = interpretLesson(model);
 
+  const setLastVisited = useProgressStore((s) => s.setLastVisited);
+  React.useEffect(() => {
+    if (lesson?.path && lesson.frontmatter?.title) {
+      setLastVisited(lesson.path, lesson.frontmatter.title);
+    }
+  }, [lesson?.path, lesson?.frontmatter?.title, setLastVisited]);
+
   const phaseNumber = lesson.frontmatter.phase ?? 0;
 
-  // Record lesson opened in recent activity and persistent lastVisited state
-  React.useEffect(() => {
-    if (lesson?.path) {
-      useProgressStore.getState().setLastVisited(lesson.path, lesson.frontmatter.title);
-    }
-  }, [lesson?.path, lesson?.frontmatter?.title]);
-
   return (
-    <LessonFullscreenProvider
-      lessonTitle={lesson.frontmatter.title}
-      phaseNumber={phaseNumber}
-      weekNumber={lesson.frontmatter.week}
-      dayNumber={lesson.frontmatter.day}
-      estimatedMinutes={model.estimatedMinutes}
-    >
+    <LessonFullscreenProvider lesson={lesson} prevLesson={prevLesson} nextLesson={nextLesson}>
       <PhaseLockWall
         phaseNumber={phaseNumber}
         phaseTitle={`Phase ${String(phaseNumber).padStart(2, "0")}`}

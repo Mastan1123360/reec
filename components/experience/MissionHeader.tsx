@@ -121,14 +121,13 @@ export function MissionHeader({
           {isBookmarked ? "Bookmarked" : "Bookmark"}
         </Button>
         <Button
-          variant="outline"
+          variant={isFullscreen ? "default" : "outline"}
           size="sm"
           onClick={toggleFullscreen}
-          title={isFullscreen ? "Exit fullscreen mode (Esc)" : "Read lesson in distraction-free fullscreen mode"}
-          className="gap-1.5"
+          className="cursor-pointer"
         >
           {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-          <span>{isFullscreen ? "Exit Fullscreen" : "Fullscreen"}</span>
+          {isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
         </Button>
       </div>
     </header>
