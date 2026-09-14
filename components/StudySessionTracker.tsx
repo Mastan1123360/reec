@@ -27,14 +27,28 @@ export function StudySessionTracker() {
     }, 5000);
 
     const handleVisibilityChange = () => {
-      lastTick = Date.now();
+      if (document.visibilityState === "visible") {
+        lastTick = Date.now();
+      } else if (accumulatedSeconds > 0) {
+        recordStudySeconds(accumulatedSeconds);
+        accumulatedSeconds = 0;
+      }
+    };
+
+    const handleBeforeUnload = () => {
+      if (accumulatedSeconds > 0) {
+        recordStudySeconds(accumulatedSeconds);
+        accumulatedSeconds = 0;
+      }
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("beforeunload", handleBeforeUnload);
 
     return () => {
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
       if (accumulatedSeconds > 0) {
         recordStudySeconds(accumulatedSeconds);
       }

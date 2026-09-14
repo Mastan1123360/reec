@@ -17,9 +17,13 @@
  * templated identically for all of them.
  */
 
+"use client";
+
+import * as React from "react";
 import { buildSemanticModel } from "@/lib/semantic/model";
 import { interpretLesson } from "@/lib/semantic/interpreter";
 import type { Lesson } from "@/lib/content/types";
+import { useProgressStore } from "@/lib/progress/store";
 
 import { MissionHeader } from "./MissionHeader";
 import { ConceptMap } from "./ConceptMap";
@@ -28,6 +32,7 @@ import { NextLessonPreview } from "./NextLessonPreview";
 import { NextLessonPrefetch } from "./NextLessonPrefetch";
 import { LessonRenderer } from "@/components/LessonRenderer";
 import { PhaseLockWall } from "@/components/auth/PhaseLockWall";
+import { LessonFullscreenProvider } from "./LessonFullscreenContext";
 
 interface LessonExperienceProps {
   lesson: Lesson;
@@ -41,25 +46,40 @@ export function LessonExperience({ lesson, prevLesson, nextLesson }: LessonExper
 
   const phaseNumber = lesson.frontmatter.phase ?? 0;
 
+  // Record lesson opened in recent activity and persistent lastVisited state
+  React.useEffect(() => {
+    if (lesson?.path) {
+      useProgressStore.getState().setLastVisited(lesson.path, lesson.frontmatter.title);
+    }
+  }, [lesson?.path, lesson?.frontmatter?.title]);
+
   return (
-    <PhaseLockWall
-      phaseNumber={phaseNumber}
-      phaseTitle={`Phase ${String(phaseNumber).padStart(2, "0")}`}
+    <LessonFullscreenProvider
       lessonTitle={lesson.frontmatter.title}
+      phaseNumber={phaseNumber}
+      weekNumber={lesson.frontmatter.week}
+      dayNumber={lesson.frontmatter.day}
+      estimatedMinutes={model.estimatedMinutes}
     >
-      <MissionHeader lesson={lesson} model={model} plan={plan} />
+      <PhaseLockWall
+        phaseNumber={phaseNumber}
+        phaseTitle={`Phase ${String(phaseNumber).padStart(2, "0")}`}
+        lessonTitle={lesson.frontmatter.title}
+      >
+        <MissionHeader lesson={lesson} model={model} plan={plan} />
 
-      {plan.capabilities.conceptMap && <ConceptMap concepts={model.concepts} />}
+        {plan.capabilities.conceptMap && <ConceptMap concepts={model.concepts} />}
 
-      {/* "Interactive Reading" — the existing widget-driven renderer,
-          now additionally passed the plan so it can attach per-block
-          visualizer enhancements (EnhancementStrip) where the
-          interpreter decided they apply. */}
-      <LessonRenderer lesson={lesson} plan={plan} />
+        {/* "Interactive Reading" — the existing widget-driven renderer,
+            now additionally passed the plan so it can attach per-block
+            visualizer enhancements (EnhancementStrip) where the
+            interpreter decided they apply. */}
+        <LessonRenderer lesson={lesson} plan={plan} />
 
-      <CompletionSummary lesson={lesson} model={model} />
-      <NextLessonPreview lesson={lesson} prevLesson={prevLesson} nextLesson={nextLesson} />
-      <NextLessonPrefetch nextPath={nextLesson?.path} />
-    </PhaseLockWall>
+        <CompletionSummary lesson={lesson} model={model} />
+        <NextLessonPreview lesson={lesson} prevLesson={prevLesson} nextLesson={nextLesson} />
+        <NextLessonPrefetch nextPath={nextLesson?.path} />
+      </PhaseLockWall>
+    </LessonFullscreenProvider>
   );
 }

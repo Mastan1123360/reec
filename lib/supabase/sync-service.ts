@@ -222,6 +222,44 @@ class SupabaseSyncManager {
         }
       );
 
+      // 4. Cross-Device Activity Synchronization (Instant Multi-Device Broadcast)
+      channel.on("broadcast", { event: "ACTIVITY_LOGGED" }, (payload) => {
+        if (payload?.payload?.item) {
+          this.mergeActivityIntoStore(payload.payload.item as ActivityItem);
+        }
+      });
+
+      channel.on("broadcast", { event: "ACTIVITY_LOG_CLEARED" }, () => {
+        useProgressStore.setState({ activityLog: [] });
+      });
+
+      // 5. Cross-Device Activity Persistence Fallback via Postgres Changes
+      channel.on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "user_activity_logs",
+          filter: `user_id=eq.${userId}`,
+        },
+        (payload) => {
+          if (this.isHydrating) return;
+          const row = payload.new as Record<string, unknown> | null;
+          if (row && row.id) {
+            const item: ActivityItem = {
+              id: String(row.id),
+              type: row.type as ActivityItem["type"],
+              title: String(row.title || "Activity"),
+              subtitle: row.subtitle ? String(row.subtitle) : undefined,
+              timestamp: Number(row.timestamp) || Date.now(),
+              path: row.path ? String(row.path) : undefined,
+              iconType: (row.icon_type as ActivityItem["iconType"]) || undefined,
+            };
+            this.mergeActivityIntoStore(item);
+          }
+        }
+      );
+
       channel.subscribe((status) => {
         if (status === "SUBSCRIBED") {
           // Connected to multi-device realtime channel
@@ -243,8 +281,19 @@ class SupabaseSyncManager {
     const bookmarks = (serverProgress.bookmarks as string[]) || [];
     const notes = (serverProgress.notes as Record<string, string>) || {};
     const checklist = (serverProgress.checklist as Record<string, boolean>) || {};
-    const studyTimeMinutes = (serverProgress.study_time_minutes as number) || 0;
-    const dailyMinutes = (serverProgress.daily_minutes as Record<string, number>) || {};
+    
+    // Defensively merge study time: never reduce or truncate local study time due to DB integer cast
+    const currentStudyMinutes = useProgressStore.getState().studyTimeMinutes || 0;
+    const incomingStudyMinutes = (serverProgress.study_time_minutes as number) || 0;
+    const studyTimeMinutes = Math.max(currentStudyMinutes, incomingStudyMinutes);
+
+    const currentDaily = useProgressStore.getState().dailyMinutes || {};
+    const incomingDaily = (serverProgress.daily_minutes as Record<string, number>) || {};
+    const dailyMinutes: Record<string, number> = { ...currentDaily };
+    for (const [date, mins] of Object.entries(incomingDaily)) {
+      dailyMinutes[date] = Math.max(dailyMinutes[date] || 0, mins);
+    }
+
     const activeDates = (serverProgress.active_dates as string[]) || [];
     const lastVisited = (serverProgress.last_visited as string) || null;
 
@@ -259,6 +308,21 @@ class SupabaseSyncManager {
       activeDates,
       lastVisited,
     });
+  }
+
+  /**
+   * Merges an incoming activity item cleanly into the store without duplicates.
+   */
+  public mergeActivityIntoStore(item: ActivityItem) {
+    if (!item || !item.id) return;
+    const current = useProgressStore.getState().activityLog || [];
+    if (current.some((x) => x.id === item.id)) return;
+
+    const next = [item, ...current]
+      .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+      .slice(0, 50);
+
+    useProgressStore.setState({ activityLog: next });
   }
 
   /**
@@ -564,7 +628,8 @@ class SupabaseSyncManager {
         mergedChecklist = (serverProgress?.checklist as Record<string, boolean>) || {};
         mergedDailyMinutes = (serverProgress?.daily_minutes as Record<string, number>) || {};
         mergedActiveDates = (serverProgress?.active_dates as string[]) || [];
-        mergedStudyMinutes = (serverProgress?.study_time_minutes as number) || 0;
+        const localStudyMinutes = useProgressStore.getState().studyTimeMinutes || 0;
+        mergedStudyMinutes = Math.max(localStudyMinutes, (serverProgress?.study_time_minutes as number) || 0);
         mergedLastVisited = (serverProgress?.last_visited as string) || null;
       }
 
@@ -629,7 +694,25 @@ class SupabaseSyncManager {
             path: sl.path || undefined,
             iconType: (sl.icon_type as ActivityItem["iconType"]) || undefined,
           }));
-          useProgressStore.setState({ activityLog: logsList });
+
+          // Merge server activity logs with any local activities
+          const localLogs = useProgressStore.getState().activityLog || [];
+          const combinedMap = new Map<string, ActivityItem>();
+          for (const item of localLogs) {
+            if (item && item.id && !item.id.startsWith("init-") && item.id !== "act-welcome") {
+              combinedMap.set(item.id, item);
+            }
+          }
+          for (const item of logsList) {
+            if (item && item.id) {
+              combinedMap.set(item.id, item);
+            }
+          }
+          const mergedLogs = Array.from(combinedMap.values())
+            .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+            .slice(0, 50);
+
+          useProgressStore.setState({ activityLog: mergedLogs });
         }
       }
 
@@ -802,9 +885,36 @@ class SupabaseSyncManager {
   }
 
   /**
-   * Sync single activity log entry.
+   * Sync single activity log entry and broadcast across all devices.
    */
   public async syncActivityLog(item: ActivityItem) {
+    if (!item || !item.id) return;
+
+    // 1. Same-device multi-tab instant synchronization
+    if (typeof window !== "undefined" && "BroadcastChannel" in window) {
+      try {
+        const bc = new BroadcastChannel("reec_activity_sync");
+        bc.postMessage({ type: "ACTIVITY_LOGGED", item });
+        bc.close();
+      } catch {
+        // BroadcastChannel fallback
+      }
+    }
+
+    // 2. Instant multi-device real-time broadcast via Supabase channel
+    if (this.realtimeChannel && this.currentUserId) {
+      try {
+        this.realtimeChannel.send({
+          type: "broadcast",
+          event: "ACTIVITY_LOGGED",
+          payload: { item, userId: this.currentUserId },
+        });
+      } catch {
+        // Realtime fallback
+      }
+    }
+
+    // 3. Persistent database storage in Supabase
     if (this.isHydrating || !this.currentUserId || this.missingTables.has("user_activity_logs")) return;
     const client = getSupabaseClient();
     if (!client) return;
@@ -830,6 +940,43 @@ class SupabaseSyncManager {
       if (isSchemaCacheError(err)) {
         this.missingTables.add("user_activity_logs");
       }
+    }
+  }
+
+  /**
+   * Clears activity logs locally, in Supabase DB, and broadcasts across all devices.
+   */
+  public async syncClearActivityLog() {
+    if (typeof window !== "undefined" && "BroadcastChannel" in window) {
+      try {
+        const bc = new BroadcastChannel("reec_activity_sync");
+        bc.postMessage({ type: "ACTIVITY_LOG_CLEARED" });
+        bc.close();
+      } catch {
+        // BroadcastChannel fallback
+      }
+    }
+
+    if (this.realtimeChannel && this.currentUserId) {
+      try {
+        this.realtimeChannel.send({
+          type: "broadcast",
+          event: "ACTIVITY_LOG_CLEARED",
+          payload: { userId: this.currentUserId },
+        });
+      } catch {
+        // Fallback
+      }
+    }
+
+    if (!this.currentUserId || this.missingTables.has("user_activity_logs")) return;
+    const client = getSupabaseClient();
+    if (!client) return;
+
+    try {
+      await client.from("user_activity_logs").delete().eq("user_id", this.currentUserId);
+    } catch {
+      // Ignore
     }
   }
 

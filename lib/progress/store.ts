@@ -279,10 +279,34 @@ export const useProgressStore = create<ProgressState>()(
           const currentDaily = state.dailyMinutes ?? {};
           const currentDayMins = currentDaily[today] ?? 0;
           const addedMinutes = seconds / 60;
-          const newDayMins = Math.round(currentDayMins + addedMinutes);
-          const newTotalMins = Math.round((state.studyTimeMinutes ?? 0) + addedMinutes);
+
+          // CRITICAL: Preserve precise fractional minutes (4 decimals) so small increments
+          // (e.g. 5s = 0.0833m) accumulate continuously instead of rounding down to 0 and sticking at 44m.
+          const prevTotal = state.studyTimeMinutes ?? 0;
+          const newTotalMins = Number((prevTotal + addedMinutes).toFixed(4));
+          const newDayMins = Number((currentDayMins + addedMinutes).toFixed(4));
           const currentActiveDates = Array.isArray(state.activeDates) ? state.activeDates : [];
           const activeDates = currentActiveDates.includes(today) ? currentActiveDates : [today, ...currentActiveDates];
+
+          // Auto-log activity on every 15-minute study milestone
+          const prevQuarter = Math.floor(prevTotal / 15);
+          const nextQuarter = Math.floor(newTotalMins / 15);
+          let newActivities = state.activityLog;
+          if (nextQuarter > prevQuarter && nextQuarter > 0) {
+            const milestoneMins = nextQuarter * 15;
+            const milestoneItem: ActivityItem = {
+              id: `act-milestone-${milestoneMins}-${Date.now()}`,
+              type: "study_session",
+              title: `Milestone: ${milestoneMins}m of study time completed`,
+              subtitle: "Focus and dedication milestone achieved",
+              timestamp: Date.now(),
+              iconType: "time",
+            };
+            newActivities = [
+              milestoneItem,
+              ...(Array.isArray(state.activityLog) ? state.activityLog : []),
+            ].slice(0, 50);
+          }
 
           return {
             studyTimeMinutes: newTotalMins,
@@ -291,7 +315,8 @@ export const useProgressStore = create<ProgressState>()(
               [today]: newDayMins,
             },
             activeDates,
-            currentSessionSeconds: state.currentSessionSeconds + seconds,
+            activityLog: newActivities,
+            currentSessionSeconds: (state.currentSessionSeconds || 0) + seconds,
           };
         });
       },
@@ -303,8 +328,8 @@ export const useProgressStore = create<ProgressState>()(
           const today = getTodayString();
           const currentDaily = state.dailyMinutes ?? {};
           const currentDayMins = currentDaily[today] ?? 0;
-          const newDayMins = Math.round(currentDayMins + cleanMinutes);
-          const newTotalMins = Math.round((state.studyTimeMinutes ?? 0) + cleanMinutes);
+          const newDayMins = Number((currentDayMins + cleanMinutes).toFixed(4));
+          const newTotalMins = Number(((state.studyTimeMinutes ?? 0) + cleanMinutes).toFixed(4));
 
           const currentActiveDates = Array.isArray(state.activeDates) ? state.activeDates : [];
           const activeDates = currentActiveDates.includes(today) ? currentActiveDates : [today, ...currentActiveDates];
@@ -370,7 +395,12 @@ export const useProgressStore = create<ProgressState>()(
           ].slice(0, 50),
         })),
 
-      clearActivityLog: () => set({ activityLog: [] }),
+      clearActivityLog: () => {
+        set({ activityLog: [] });
+        if (typeof window !== "undefined") {
+          SupabaseSyncService.syncClearActivityLog();
+        }
+      },
 
       resetAllProgress: () => {
         set({
@@ -608,8 +638,32 @@ export const useProgressStore = create<ProgressState>()(
   )
 );
 
-// Auto-sync store updates to Supabase
+// Auto-sync store updates to Supabase and across browser tabs
 if (typeof window !== "undefined") {
+  // 1. Same-device multi-tab real-time activity synchronization
+  if ("BroadcastChannel" in window) {
+    try {
+      const activityChannel = new BroadcastChannel("reec_activity_sync");
+      activityChannel.onmessage = (event) => {
+        if (event.data?.type === "ACTIVITY_LOGGED" && event.data.item) {
+          const item = event.data.item as ActivityItem;
+          const current = useProgressStore.getState().activityLog || [];
+          if (!current.some((x) => x.id === item.id)) {
+            const next = [item, ...current]
+              .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+              .slice(0, 50);
+            useProgressStore.setState({ activityLog: next });
+          }
+        } else if (event.data?.type === "ACTIVITY_LOG_CLEARED") {
+          useProgressStore.setState({ activityLog: [] });
+        }
+      };
+    } catch {
+      // BroadcastChannel unavailable
+    }
+  }
+
+  // 2. Zustand state subscription for cloud persistence and cross-device sync
   useProgressStore.subscribe((state, prevState) => {
     if (
       state.completedLessons !== prevState.completedLessons ||
@@ -623,6 +677,17 @@ if (typeof window !== "undefined") {
       state.lastVisited !== prevState.lastVisited
     ) {
       SupabaseSyncService.queueProgressSync();
+    }
+
+    // Detect new activity items and synchronize across all devices
+    if (state.activityLog !== prevState.activityLog) {
+      const prevIds = new Set((prevState.activityLog || []).map((x) => x.id));
+      const newlyAdded = (state.activityLog || []).filter((item) => !prevIds.has(item.id));
+      for (const item of newlyAdded) {
+        if (item && item.id && !item.id.startsWith("init-") && item.id !== "act-welcome") {
+          SupabaseSyncService.syncActivityLog(item);
+        }
+      }
     }
   });
 }

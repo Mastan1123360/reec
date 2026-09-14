@@ -1,8 +1,9 @@
 "use client";
-import { Clock, Target, ListChecks, Bookmark, CheckCircle2, Compass } from "lucide-react";
+import { Clock, Target, ListChecks, Bookmark, CheckCircle2, Compass, Maximize2, Minimize2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useProgressStore } from "@/lib/progress/store";
+import { useLessonFullscreen } from "./LessonFullscreenContext";
 import type { Lesson } from "@/lib/content/types";
 import type { LessonSemanticModel } from "@/lib/semantic/model";
 import type { ExperiencePlan } from "@/lib/semantic/interpreter";
@@ -29,6 +30,7 @@ export function MissionHeader({
   const isBookmarked = useProgressStore((s) => s.bookmarks.has(lesson.path));
   const toggleLesson = useProgressStore((s) => s.toggleLesson);
   const toggleBookmark = useProgressStore((s) => s.toggleBookmark);
+  const { isFullscreen, toggleFullscreen } = useLessonFullscreen();
 
   return (
     <header
@@ -117,6 +119,16 @@ export function MissionHeader({
         >
           <Bookmark size={14} fill={isBookmarked ? "currentColor" : "none"} />
           {isBookmarked ? "Bookmarked" : "Bookmark"}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={toggleFullscreen}
+          title={isFullscreen ? "Exit fullscreen mode (Esc)" : "Read lesson in distraction-free fullscreen mode"}
+          className="gap-1.5"
+        >
+          {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+          <span>{isFullscreen ? "Exit Fullscreen" : "Fullscreen"}</span>
         </Button>
       </div>
     </header>
