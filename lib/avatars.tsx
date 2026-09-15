@@ -206,7 +206,7 @@ export function saveSelectedAvatarId(avatarId: string): void {
   } catch {}
 }
 
-export function useUserAvatar(userMetadataAvatarId?: string, userMetadataGender?: string) {
+export function useUserAvatar(userMetadataAvatarId?: string | null, userMetadataGender?: string | null) {
   const [gender, setGender] = React.useState<GenderOption>(() => {
     if (userMetadataGender === "female" || userMetadataGender === "male") {
       return userMetadataGender;

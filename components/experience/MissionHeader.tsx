@@ -107,7 +107,7 @@ export function MissionHeader({
         <Button
           variant={isDone ? "default" : "outline"}
           size="sm"
-          onClick={() => toggleLesson(lesson.path)}
+          onClick={() => toggleLesson(lesson.path, lesson.frontmatter.title, lesson.frontmatter.phase)}
         >
           <CheckCircle2 size={14} />
           {isDone ? "Completed" : "Mark lesson complete"}
@@ -115,7 +115,7 @@ export function MissionHeader({
         <Button
           variant="outline"
           size="sm"
-          onClick={() => toggleBookmark(lesson.path)}
+          onClick={() => toggleBookmark(lesson.path, lesson.frontmatter.title, lesson.frontmatter.phase)}
         >
           <Bookmark size={14} fill={isBookmarked ? "currentColor" : "none"} />
           {isBookmarked ? "Bookmarked" : "Bookmark"}

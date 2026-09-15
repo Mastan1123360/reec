@@ -317,4 +317,98 @@ describe("Supabase Sync, Security & Migration Service", () => {
     // Local data should still be intact
     expect(useProgressStore.getState().completedLessons.size).toBe(1);
   });
+
+  it("preserves locally marked lessons across multiple weeks/phases and unions during re-sync without unmarking", async () => {
+    // 1. Setup existing user with Week 1 completed on server
+    const serverWeek1 = ["/phase-00/week-01/day-01", "/phase-00/week-01/day-02"];
+    let capturedUpsertPayload: any = null;
+
+    const mockClient = {
+      from: vi.fn().mockImplementation((table: string) => {
+        if (table === "user_progress") {
+          return {
+            upsert: vi.fn().mockImplementation((payload: any) => {
+              capturedUpsertPayload = payload;
+              return Promise.resolve({ error: null });
+            }),
+            select: vi.fn().mockReturnValue({
+              eq: vi.fn().mockReturnValue({
+                maybeSingle: vi.fn().mockResolvedValue({
+                  data: {
+                    user_id: "user-sync-persist",
+                    completed_lessons: serverWeek1,
+                    completed_blocks: [],
+                    bookmarks: [],
+                    notes: {},
+                    checklist: {},
+                    study_time_minutes: 60,
+                    daily_minutes: {},
+                    active_dates: [],
+                    last_visited: null,
+                    version: 1,
+                  },
+                  error: null,
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === "profiles") {
+          return {
+            upsert: vi.fn().mockResolvedValue({ error: null }),
+          };
+        }
+        if (table === "user_activity_logs") {
+          return {
+            select: vi.fn().mockReturnValue({
+              eq: vi.fn().mockReturnValue({
+                order: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue({ data: [], error: null }),
+                }),
+              }),
+            }),
+            upsert: vi.fn().mockResolvedValue({ error: null }),
+          };
+        }
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockResolvedValue({ data: [], error: null }),
+          }),
+        };
+      }),
+    };
+
+    vi.spyOn(clientModule, "getSupabaseClient").mockReturnValue(
+      mockClient as unknown as ReturnType<typeof clientModule.getSupabaseClient>
+    );
+
+    SupabaseSyncService.setCurrentUser("user-sync-persist", "user@example.com");
+
+    // 2. User marks Week 2 and Week 3 locally before server re-sync
+    useProgressStore.getState().toggleLesson("/phase-00/week-01/day-01", "W1D1", 0);
+    useProgressStore.getState().toggleLesson("/phase-00/week-01/day-02", "W1D2", 0);
+    useProgressStore.getState().toggleLesson("/phase-00/week-02/day-01", "W2D1", 0);
+    useProgressStore.getState().toggleLesson("/phase-00/week-02/day-02", "W2D2", 0);
+    useProgressStore.getState().toggleLesson("/phase-00/week-03/day-01", "W3D1", 0);
+
+    expect(useProgressStore.getState().completedLessons.size).toBe(5);
+
+    // 3. User triggers re-sync (e.g. migrateAndHydrateUser or sync status check)
+    const syncResult = await SupabaseSyncService.migrateAndHydrateUser("user-sync-persist");
+    expect(syncResult).toBe(true);
+
+    // 4. Verify local store STILL contains all 5 lessons: none were unmarked or lost
+    const localCompleted = useProgressStore.getState().completedLessons;
+    expect(localCompleted.size).toBe(5);
+    expect(localCompleted.has("/phase-00/week-01/day-01")).toBe(true);
+    expect(localCompleted.has("/phase-00/week-01/day-02")).toBe(true);
+    expect(localCompleted.has("/phase-00/week-02/day-01")).toBe(true);
+    expect(localCompleted.has("/phase-00/week-02/day-02")).toBe(true);
+    expect(localCompleted.has("/phase-00/week-03/day-01")).toBe(true);
+
+    // 5. Verify server upsert received all 5 lessons
+    expect(capturedUpsertPayload).toBeDefined();
+    expect(capturedUpsertPayload.completed_lessons).toHaveLength(5);
+    expect(capturedUpsertPayload.completed_lessons).toContain("/phase-00/week-03/day-01");
+  });
 });

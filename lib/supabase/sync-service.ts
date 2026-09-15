@@ -47,6 +47,42 @@ function isSchemaCacheError(err: unknown): boolean {
   );
 }
 
+/**
+ * Scans activity history (most recent first) to find lessons that were explicitly uncompleted
+ * without subsequent completion.
+ */
+function getExplicitlyUncompletedPaths(activities: ActivityItem[]): Set<string> {
+  const seen = new Set<string>();
+  const uncompleted = new Set<string>();
+  for (const act of activities) {
+    if (act && act.path && !seen.has(act.path)) {
+      seen.add(act.path);
+      if (act.type === "lesson_uncompleted") {
+        uncompleted.add(act.path);
+      }
+    }
+  }
+  return uncompleted;
+}
+
+/**
+ * Scans activity history (most recent first) to find bookmarks that were explicitly removed
+ * without subsequent re-adding.
+ */
+function getExplicitlyRemovedBookmarks(activities: ActivityItem[]): Set<string> {
+  const seen = new Set<string>();
+  const removed = new Set<string>();
+  for (const act of activities) {
+    if (act && act.path && !seen.has(act.path)) {
+      seen.add(act.path);
+      if (act.type === "bookmark_removed") {
+        removed.add(act.path);
+      }
+    }
+  }
+  return removed;
+}
+
 class SupabaseSyncManager {
   private currentUserId: string | null = null;
   private currentUserEmail: string | null = null;
@@ -65,9 +101,10 @@ class SupabaseSyncManager {
   // File local revision counter to prevent stale cloud overwrite
   private fileLocalRevisions = new Map<string, number>();
 
-  // Progress debounce timer
+  // Progress debounce timer & monotonically increasing revision counters
   private progressDebounceTimer: NodeJS.Timeout | null = null;
   private progressLocalRevision = 0;
+  private lastSyncedProgressRevision = 0;
 
   // In-flight hydration guard to prevent redundant background migrations
   private pendingHydrationUserId: string | null = null;
@@ -138,6 +175,8 @@ class SupabaseSyncManager {
       clearTimeout(this.progressDebounceTimer);
       this.progressDebounceTimer = null;
     }
+    this.progressLocalRevision = 0;
+    this.lastSyncedProgressRevision = 0;
     this.cancelPendingHydration();
     this.activeHydrationUserId = null;
   }
@@ -273,15 +312,52 @@ class SupabaseSyncManager {
   }
 
   /**
-   * Applies cloud progress payload directly to local Zustand store
+   * Applies cloud progress payload to local Zustand store, safely merging
+   * to guarantee that locally marked lessons and bookmarks are never reverted or lost.
    */
   private applyCloudProgressToStore(serverProgress: Record<string, unknown>) {
-    const completedLessons = (serverProgress.completed_lessons as string[]) || [];
-    const completedBlocks = (serverProgress.completed_blocks as string[]) || [];
-    const bookmarks = (serverProgress.bookmarks as string[]) || [];
-    const notes = (serverProgress.notes as Record<string, string>) || {};
-    const checklist = (serverProgress.checklist as Record<string, boolean>) || {};
-    
+    const incomingLessons = (serverProgress.completed_lessons as string[]) || [];
+    const incomingBlocks = (serverProgress.completed_blocks as string[]) || [];
+    const incomingBookmarks = (serverProgress.bookmarks as string[]) || [];
+    const incomingNotes = (serverProgress.notes as Record<string, string>) || {};
+    const incomingChecklist = (serverProgress.checklist as Record<string, boolean>) || {};
+
+    const localLessons = useProgressStore.getState().completedLessons;
+    const localBlocks = useProgressStore.getState().completedBlocks;
+    const localBookmarks = useProgressStore.getState().bookmarks;
+    const localNotes = useProgressStore.getState().notes || {};
+    const localChecklist = useProgressStore.getState().checklist || {};
+
+    // Honor explicit local unmarks
+    const recentActivities = useProgressStore.getState().activityLog || [];
+    const explicitlyUncompleted = getExplicitlyUncompletedPaths(recentActivities);
+    const explicitlyUnbookmarked = getExplicitlyRemovedBookmarks(recentActivities);
+
+    // Merge completed lessons: union incoming with local, respecting recent unmarks
+    const mergedLessons = new Set<string>();
+    for (const path of incomingLessons) {
+      if (!explicitlyUncompleted.has(path)) {
+        mergedLessons.add(path);
+      }
+    }
+    for (const path of localLessons) {
+      mergedLessons.add(path);
+    }
+
+    // Merge blocks
+    const mergedBlocks = new Set<string>([...incomingBlocks, ...localBlocks]);
+
+    // Merge bookmarks
+    const mergedBookmarks = new Set<string>();
+    for (const path of incomingBookmarks) {
+      if (!explicitlyUnbookmarked.has(path)) {
+        mergedBookmarks.add(path);
+      }
+    }
+    for (const path of localBookmarks) {
+      mergedBookmarks.add(path);
+    }
+
     // Defensively merge study time: never reduce or truncate local study time due to DB integer cast
     const currentStudyMinutes = useProgressStore.getState().studyTimeMinutes || 0;
     const incomingStudyMinutes = (serverProgress.study_time_minutes as number) || 0;
@@ -294,15 +370,17 @@ class SupabaseSyncManager {
       dailyMinutes[date] = Math.max(dailyMinutes[date] || 0, mins);
     }
 
-    const activeDates = (serverProgress.active_dates as string[]) || [];
-    const lastVisited = (serverProgress.last_visited as string) || null;
+    const currentActiveDates = useProgressStore.getState().activeDates || [];
+    const incomingActiveDates = (serverProgress.active_dates as string[]) || [];
+    const activeDates = Array.from(new Set([...currentActiveDates, ...incomingActiveDates]));
+    const lastVisited = (serverProgress.last_visited as string) || useProgressStore.getState().lastVisited || null;
 
     useProgressStore.setState({
-      completedLessons: new Set(completedLessons),
-      completedBlocks: new Set(completedBlocks),
-      bookmarks: new Set(bookmarks),
-      notes,
-      checklist,
+      completedLessons: mergedLessons,
+      completedBlocks: mergedBlocks,
+      bookmarks: mergedBookmarks,
+      notes: { ...incomingNotes, ...localNotes },
+      checklist: { ...incomingChecklist, ...localChecklist },
       studyTimeMinutes,
       dailyMinutes,
       activeDates,
@@ -530,6 +608,11 @@ class SupabaseSyncManager {
     const client = getSupabaseClient();
     if (!client) return;
 
+    // Flush any pending local changes first so the cloud has our latest state!
+    if (this.progressDebounceTimer) {
+      await this.flushPendingProgressSync();
+    }
+
     try {
       const { data, error } = await client
         .from("user_progress")
@@ -557,6 +640,11 @@ class SupabaseSyncManager {
     }
 
     this.setStatus("migrating");
+
+    // Flush any pending local progress changes to Supabase FIRST before fetching or setting isHydrating!
+    // This ensures any newly marked/unmarked lessons in local store are pushed to Supabase and not lost.
+    await this.flushPendingProgressSync();
+
     this.isHydrating = true;
 
     try {
@@ -620,17 +708,70 @@ class SupabaseSyncManager {
         mergedStudyMinutes = 0;
         mergedLastVisited = null;
       } else {
-        // EXISTING USER: Hydrate authoritative server-side progress
-        mergedLessons = (serverProgress?.completed_lessons as string[]) || [];
-        mergedBlocks = (serverProgress?.completed_blocks as string[]) || [];
-        mergedBookmarks = (serverProgress?.bookmarks as string[]) || [];
-        mergedNotes = (serverProgress?.notes as Record<string, string>) || {};
-        mergedChecklist = (serverProgress?.checklist as Record<string, boolean>) || {};
-        mergedDailyMinutes = (serverProgress?.daily_minutes as Record<string, number>) || {};
-        mergedActiveDates = (serverProgress?.active_dates as string[]) || [];
+        // EXISTING USER: Perform robust bidirectional merge with local state
+        const serverLessonsList = (serverProgress?.completed_lessons as string[]) || [];
+        const localLessonsSet = useProgressStore.getState().completedLessons;
+
+        // Honor any explicit unmarks from recent local activity
+        const recentActivities = useProgressStore.getState().activityLog || [];
+        const explicitlyUncompleted = getExplicitlyUncompletedPaths(recentActivities);
+
+        // Union server lessons with local lessons, preserving anything marked locally
+        const mergedLessonsSet = new Set<string>();
+        for (const path of serverLessonsList) {
+          if (!explicitlyUncompleted.has(path)) {
+            mergedLessonsSet.add(path);
+          }
+        }
+        for (const path of localLessonsSet) {
+          mergedLessonsSet.add(path);
+        }
+        mergedLessons = Array.from(mergedLessonsSet);
+
+        // Merge completed blocks
+        const serverBlocksList = (serverProgress?.completed_blocks as string[]) || [];
+        const localBlocksSet = useProgressStore.getState().completedBlocks;
+        mergedBlocks = Array.from(new Set([...serverBlocksList, ...localBlocksSet]));
+
+        // Merge bookmarks
+        const serverBookmarksList = (serverProgress?.bookmarks as string[]) || [];
+        const localBookmarksSet = useProgressStore.getState().bookmarks;
+        const explicitlyUnbookmarked = getExplicitlyRemovedBookmarks(recentActivities);
+        const mergedBookmarksSet = new Set<string>();
+        for (const path of serverBookmarksList) {
+          if (!explicitlyUnbookmarked.has(path)) {
+            mergedBookmarksSet.add(path);
+          }
+        }
+        for (const path of localBookmarksSet) {
+          mergedBookmarksSet.add(path);
+        }
+        mergedBookmarks = Array.from(mergedBookmarksSet);
+
+        // Merge notes & checklist
+        const serverNotes = (serverProgress?.notes as Record<string, string>) || {};
+        const localNotes = useProgressStore.getState().notes || {};
+        mergedNotes = { ...serverNotes, ...localNotes };
+
+        const serverChecklist = (serverProgress?.checklist as Record<string, boolean>) || {};
+        const localChecklist = useProgressStore.getState().checklist || {};
+        mergedChecklist = { ...serverChecklist, ...localChecklist };
+
+        // Merge daily minutes and active dates
+        const localDaily = useProgressStore.getState().dailyMinutes || {};
+        const serverDaily = (serverProgress?.daily_minutes as Record<string, number>) || {};
+        mergedDailyMinutes = { ...serverDaily };
+        for (const [date, mins] of Object.entries(localDaily)) {
+          mergedDailyMinutes[date] = Math.max(mergedDailyMinutes[date] || 0, mins);
+        }
+
+        const serverActiveDates = (serverProgress?.active_dates as string[]) || [];
+        const localActiveDates = useProgressStore.getState().activeDates || [];
+        mergedActiveDates = Array.from(new Set([...serverActiveDates, ...localActiveDates]));
+
         const localStudyMinutes = useProgressStore.getState().studyTimeMinutes || 0;
         mergedStudyMinutes = Math.max(localStudyMinutes, (serverProgress?.study_time_minutes as number) || 0);
-        mergedLastVisited = (serverProgress?.last_visited as string) || null;
+        mergedLastVisited = (serverProgress?.last_visited as string) || useProgressStore.getState().lastVisited || null;
       }
 
       // Update server with initial clean 0 state or synced state
@@ -831,6 +972,53 @@ class SupabaseSyncManager {
   }
 
   /**
+   * Immediately flushes any pending debounced progress updates to Supabase.
+   * Cancels active debounce timer and executes upsert directly.
+   */
+  public async flushPendingProgressSync(): Promise<void> {
+    if (this.progressDebounceTimer) {
+      clearTimeout(this.progressDebounceTimer);
+      this.progressDebounceTimer = null;
+    }
+
+    if (!this.currentUserId || this.missingTables.has("user_progress")) return;
+    const client = getSupabaseClient();
+    if (!client) return;
+
+    const state = useProgressStore.getState();
+    const userId = this.currentUserId;
+    const currentRev = ++this.progressLocalRevision;
+
+    try {
+      const { error } = await client.from("user_progress").upsert(
+        {
+          user_id: userId,
+          completed_lessons: Array.from(state.completedLessons),
+          completed_blocks: Array.from(state.completedBlocks),
+          bookmarks: Array.from(state.bookmarks),
+          notes: state.notes,
+          checklist: state.checklist,
+          study_time_minutes: state.studyTimeMinutes,
+          daily_minutes: state.dailyMinutes,
+          active_dates: state.activeDates,
+          last_visited: state.lastVisited,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id" }
+      );
+      if (!error) {
+        this.lastSyncedProgressRevision = currentRev;
+      } else if (isSchemaCacheError(error)) {
+        this.missingTables.add("user_progress");
+      }
+    } catch (err) {
+      if (isSchemaCacheError(err)) {
+        this.missingTables.add("user_progress");
+      }
+    }
+  }
+
+  /**
    * Debounced sync for Progress updates.
    */
   public queueProgressSync() {
@@ -845,6 +1033,7 @@ class SupabaseSyncManager {
     const currentRev = ++this.progressLocalRevision;
 
     this.progressDebounceTimer = setTimeout(async () => {
+      this.progressDebounceTimer = null;
       if (
         currentRev !== this.progressLocalRevision ||
         !this.currentUserId ||
@@ -873,7 +1062,9 @@ class SupabaseSyncManager {
           },
           { onConflict: "user_id" }
         );
-        if (error && isSchemaCacheError(error)) {
+        if (!error) {
+          this.lastSyncedProgressRevision = currentRev;
+        } else if (isSchemaCacheError(error)) {
           this.missingTables.add("user_progress");
         }
       } catch (err) {
@@ -881,7 +1072,7 @@ class SupabaseSyncManager {
           this.missingTables.add("user_progress");
         }
       }
-    }, 1000);
+    }, 400);
   }
 
   /**
@@ -1172,6 +1363,8 @@ class SupabaseSyncManager {
       clearTimeout(this.progressDebounceTimer);
       this.progressDebounceTimer = null;
     }
+    this.progressLocalRevision = 0;
+    this.lastSyncedProgressRevision = 0;
     this.fileDebounceTimers.forEach((timer) => clearTimeout(timer));
     this.fileDebounceTimers.clear();
 
@@ -1301,6 +1494,8 @@ class SupabaseSyncManager {
       clearTimeout(this.progressDebounceTimer);
       this.progressDebounceTimer = null;
     }
+    this.progressLocalRevision = 0;
+    this.lastSyncedProgressRevision = 0;
     this.fileDebounceTimers.forEach((timer) => clearTimeout(timer));
     this.fileDebounceTimers.clear();
 

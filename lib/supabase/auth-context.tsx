@@ -1244,15 +1244,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return { success: false, error: syntax.error };
       }
 
+      const clean = syntax.cleanUsername || newUsername.trim();
+
       const currentChangedAt =
         authState.profile?.lastUsernameChangedAt ||
-        authState.user?.user_metadata?.last_username_change_at ||
         (typeof window !== "undefined" && authState.user?.id
           ? localStorage.getItem(`reec_last_username_change_at_${authState.user.id}`)
           : null);
       const currentUsername =
         authState.profile?.username ||
-        authState.user?.user_metadata?.username ||
         (typeof window !== "undefined" && authState.user?.id
           ? localStorage.getItem(`reec_username_${authState.user.id}`)
           : null);
@@ -1333,20 +1333,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         // Re-sync profile from database
         const updatedProfile = await fetchAuthoritativeProfile(authState.user.id);
-        const effectiveProfile: UserProfile = updatedProfile || {
-          id: authState.user.id,
-          username: clean,
-          displayName: authState.profile?.displayName || authState.user.email?.split("@")[0] || null,
-          avatarId: authState.profile?.avatarId || "human-male-alex",
-          gender: authState.profile?.gender || "male",
-          coins: authState.profile?.coins ?? null,
-          lastUsernameChangedAt: effectiveChangedAt,
-          createdAt: authState.profile?.createdAt,
-          updatedAt: new Date().toISOString(),
-        };
-
-        effectiveProfile.username = clean;
-        effectiveProfile.lastUsernameChangedAt = effectiveChangedAt;
+        const effectiveProfile: UserProfile = updatedProfile
+          ? {
+              ...updatedProfile,
+              username: clean,
+              lastUsernameChangedAt: effectiveChangedAt,
+            }
+          : {
+              id: authState.user.id,
+              username: clean,
+              displayName: authState.profile?.displayName || authState.user.email?.split("@")[0] || null,
+              avatarId: authState.profile?.avatarId || "human-male-alex",
+              gender: authState.profile?.gender || "male",
+              coins: authState.profile?.coins ?? null,
+              lastUsernameChangedAt: effectiveChangedAt,
+              createdAt: authState.profile?.createdAt,
+              updatedAt: new Date().toISOString(),
+            };
 
         setAuthState(
           transitionToAuthenticated(
@@ -1513,7 +1516,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (authState.status !== "authenticated") return null;
     return (
       authState.profile?.lastUsernameChangedAt ||
-      authState.user?.user_metadata?.last_username_change_at ||
       (typeof window !== "undefined" && authState.user?.id
         ? localStorage.getItem(`reec_last_username_change_at_${authState.user.id}`)
         : null) ||
