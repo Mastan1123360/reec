@@ -25,6 +25,7 @@ import { TerminalPanel } from "./TerminalPanel";
 import { StatusBar } from "./StatusBar";
 import { CommandPalette } from "./CommandPalette";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/lib/supabase/auth-context";
 import { cn } from "@/lib/utils";
 
 type MobileTab = "editor" | "output" | "terminal" | "problems" | "files";
@@ -39,6 +40,7 @@ export function RustIDE({
   isFullScreen?: boolean;
   onToggleFullScreen?: () => void;
 }) {
+  const { user, openAuthModal } = useAuth();
   const project = useRustWorkspace((s) => s.project);
   const phase = useRustWorkspace((s) => s.phase);
   const updateFileContent = useRustWorkspace((s) => s.updateFileContent);
@@ -79,6 +81,10 @@ export function RustIDE({
   }, [phase.status, mobileTab]);
 
   const handleMobileRun = async () => {
+    if (!user) {
+      openAuthModal();
+      return;
+    }
     setMobileTab("output");
     await runOperation("run");
   };

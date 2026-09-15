@@ -6,6 +6,8 @@ import dynamic from "next/dynamic";
 import { Terminal } from "lucide-react";
 import { BackButton } from "@/components/ui/BackButton";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/lib/supabase/auth-context";
+import { WorkspaceAuthWall } from "@/components/workspace/WorkspaceAuthWall";
 
 const RustIDE = dynamic(() => import("@/components/rust-ide/RustIDE").then((m) => m.RustIDE), {
   ssr: false,
@@ -17,6 +19,7 @@ const RustIDE = dynamic(() => import("@/components/rust-ide/RustIDE").then((m) =
 });
 
 export default function WorkspacePage() {
+  const { user, isLoading } = useAuth();
   const [mounted, setMounted] = React.useState(false);
   const [isFullScreen, setIsFullScreen] = React.useState(false);
 
@@ -80,6 +83,37 @@ export default function WorkspacePage() {
       </div>
     </div>
   ) : null;
+
+  // Verifying authentication state
+  if (isLoading) {
+    return (
+      <div className="flex flex-col h-full w-full p-2 sm:p-3 lg:p-4">
+        <div className="mb-2.5 flex items-center justify-between gap-4 shrink-0 px-1">
+          <BackButton fallbackHref="/" label="Return to Dashboard" />
+        </div>
+        <div className="flex flex-1 flex-col items-center justify-center p-8 text-center min-h-[50vh]">
+          <div className="h-8 w-8 rounded-full border-2 border-blue-500 border-t-transparent animate-spin mb-3" />
+          <p className="text-xs font-mono text-slate-500 dark:text-slate-400">
+            Verifying engineer workspace authorization...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Explicit authentication barrier for non-users to protect compiler runner capacity
+  if (!user) {
+    return (
+      <div className="flex flex-col h-full w-full p-2 sm:p-3 lg:p-4 overflow-y-auto">
+        <div className="mb-2.5 flex items-center justify-between gap-4 shrink-0 px-1">
+          <BackButton fallbackHref="/" label="Return to Dashboard" />
+        </div>
+        <div className="flex-1 flex items-center justify-center py-4">
+          <WorkspaceAuthWall />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <>

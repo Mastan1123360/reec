@@ -7,6 +7,7 @@ import {
   Plus, PanelBottom, PanelLeft, Search as SearchIcon,
 } from "lucide-react";
 import { useRustWorkspace } from "@/lib/rust/state";
+import { useAuth } from "@/lib/supabase/auth-context";
 
 export function CommandPalette({
   open,
@@ -19,8 +20,17 @@ export function CommandPalette({
   onToggleExplorer: () => void;
   onToggleInspector: () => void;
 }) {
+  const { user, openAuthModal } = useAuth();
   const runOperation = useRustWorkspace((s) => s.runOperation);
   const addFile = useRustWorkspace((s) => s.addFile);
+
+  const safeRunOperation = (op: "check" | "build" | "run" | "test" | "format") => {
+    if (!user) {
+      openAuthModal();
+      return;
+    }
+    runOperation(op);
+  };
 
   React.useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -61,11 +71,11 @@ export function CommandPalette({
         </Command.Empty>
 
         <Command.Group heading="Compiler Actions" className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 [&_[cmdk-group-items]]:mt-1">
-          <Item icon={CircleCheck} label="Check" shortcut="⇧⌘C" onSelect={() => run(() => runOperation("check"))} />
-          <Item icon={Hammer} label="Build" shortcut="⇧⌘B" onSelect={() => run(() => runOperation("build"))} />
-          <Item icon={Play} label="Run" shortcut="⌘⏎" onSelect={() => run(() => runOperation("run"))} />
-          <Item icon={FlaskConical} label="Test" shortcut="⇧⌘T" onSelect={() => run(() => runOperation("test"))} />
-          <Item icon={WandSparkles} label="Format" shortcut="⇧⌘F" onSelect={() => run(() => runOperation("format"))} />
+          <Item icon={CircleCheck} label="Check" shortcut="⇧⌘C" onSelect={() => run(() => safeRunOperation("check"))} />
+          <Item icon={Hammer} label="Build" shortcut="⇧⌘B" onSelect={() => run(() => safeRunOperation("build"))} />
+          <Item icon={Play} label="Run" shortcut="⌘⏎" onSelect={() => run(() => safeRunOperation("run"))} />
+          <Item icon={FlaskConical} label="Test" shortcut="⇧⌘T" onSelect={() => run(() => safeRunOperation("test"))} />
+          <Item icon={WandSparkles} label="Format" shortcut="⇧⌘F" onSelect={() => run(() => safeRunOperation("format"))} />
         </Command.Group>
 
         <Command.Group heading="File Actions" className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 [&_[cmdk-group-items]]:mt-1">

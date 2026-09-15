@@ -18,6 +18,7 @@ import {
 import { useRustWorkspace } from "@/lib/rust/state";
 import type { RustEdition, RustOperation, RustProfile } from "@/lib/rust/types";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/lib/supabase/auth-context";
 import { cn } from "@/lib/utils";
 
 const OPERATIONS: { op: RustOperation; label: string; icon: React.ElementType; shortcut: string }[] = [
@@ -175,6 +176,7 @@ function activeStatusFor(op: RustOperation) {
 }
 
 export function Toolbar() {
+  const { user, openAuthModal } = useAuth();
   const phase = useRustWorkspace((s) => s.phase);
   const runOperation = useRustWorkspace((s) => s.runOperation);
   const cancel = useRustWorkspace((s) => s.cancel);
@@ -191,30 +193,41 @@ export function Toolbar() {
   const [templateOpen, setTemplateOpen] = React.useState(false);
   const busy = IN_PROGRESS_STATUSES.has(phase.status);
 
+  const handleRunOperation = React.useCallback(
+    (op: RustOperation) => {
+      if (!user) {
+        openAuthModal();
+        return;
+      }
+      runOperation(op);
+    },
+    [user, openAuthModal, runOperation]
+  );
+
   React.useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
       if (e.key === "Enter") {
         e.preventDefault();
-        runOperation("run");
+        handleRunOperation("run");
       } else if (e.shiftKey && e.key.toLowerCase() === "c") {
         e.preventDefault();
-        runOperation("check");
+        handleRunOperation("check");
       } else if (e.shiftKey && e.key.toLowerCase() === "b") {
         e.preventDefault();
-        runOperation("build");
+        handleRunOperation("build");
       } else if (e.shiftKey && e.key.toLowerCase() === "t") {
         e.preventDefault();
-        runOperation("test");
+        handleRunOperation("test");
       } else if (e.shiftKey && e.key.toLowerCase() === "f") {
         e.preventDefault();
-        runOperation("format");
+        handleRunOperation("format");
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [runOperation]);
+  }, [handleRunOperation]);
 
   const handleCopyCode = async () => {
     if (!activeFile) return;
@@ -258,7 +271,7 @@ export function Toolbar() {
               size="sm"
               variant={isPrimary ? "default" : "outline"}
               disabled={busy && !isActive}
-              onClick={() => runOperation(op)}
+              onClick={() => handleRunOperation(op)}
               title={`${label} (${shortcut})`}
               className={cn(
                 "h-8 px-2.5 sm:px-3 text-xs font-semibold rounded-xl transition-all shadow-xs",

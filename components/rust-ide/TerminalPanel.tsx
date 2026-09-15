@@ -14,6 +14,7 @@ import { useRustWorkspace } from "@/lib/rust/state";
 import { getLearningEntry } from "@/lib/rust/learning";
 import type { RustOperation, RustDiagnostic } from "@/lib/rust/types";
 import { useTheme } from "@/components/ThemeProvider";
+import { useAuth } from "@/lib/supabase/auth-context";
 
 export interface TerminalEntry {
   id: string;
@@ -43,6 +44,7 @@ export function TerminalPanel({
 }: {
   onJumpToSource?: (line: number, column: number) => void;
 }) {
+  const { user, openAuthModal } = useAuth();
   const { theme } = useTheme();
   const isDark = theme === "dark";
   const phase = useRustWorkspace((s) => s.phase);
@@ -246,6 +248,33 @@ export function TerminalPanel({
     }
 
     // Cargo operation mappings
+    const isCargoOp =
+      normalized === "cargo check" ||
+      normalized === "check" ||
+      normalized === "cargo build" ||
+      normalized === "build" ||
+      normalized === "cargo run" ||
+      normalized === "run" ||
+      normalized === "cargo test" ||
+      normalized === "test" ||
+      normalized === "cargo fmt" ||
+      normalized === "fmt" ||
+      normalized === "format";
+
+    if (isCargoOp && !user) {
+      openAuthModal();
+      setEntries((prev) => [
+        ...prev,
+        {
+          id: `err-${Date.now()}`,
+          timestamp: new Date(),
+          type: "stderr",
+          content: "reec: authentication required. Please sign in to run compiler operations and prevent runner overload.",
+        },
+      ]);
+      return;
+    }
+
     if (normalized === "cargo check" || normalized === "check") {
       await runOperation("check");
     } else if (normalized === "cargo build" || normalized === "build") {

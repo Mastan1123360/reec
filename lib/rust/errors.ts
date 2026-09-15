@@ -29,6 +29,7 @@ export class RustBackendException extends Error {
 }
 
 const FRIENDLY_MESSAGE: Record<RustBackendErrorKind, string> = {
+  unauthorized: "Authentication required. Please sign in to access the REEC code workspace and compile code.",
   network_error: "Couldn't reach the Rust compiler service. Check your connection and try again.",
   timeout: "The compiler didn't respond in time. Your code may be too slow, or the service may be under load.",
   backend_error: "The Rust compiler service returned an unexpected response.",

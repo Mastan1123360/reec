@@ -2,9 +2,10 @@
 
 import * as React from "react";
 import dynamic from "next/dynamic";
-import { X, PanelLeft, Terminal } from "lucide-react";
+import { X, PanelLeft, Terminal, Lock, Sparkles } from "lucide-react";
 import { useRustWorkspace } from "@/lib/rust/state";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/lib/supabase/auth-context";
 
 const RustIDE = dynamic(() => import("./RustIDE").then((m) => m.RustIDE), {
   ssr: false,
@@ -16,6 +17,7 @@ const RustIDE = dynamic(() => import("./RustIDE").then((m) => m.RustIDE), {
 });
 
 export function RustWorkspacePanel() {
+  const { user, isLoading, openAuthModal } = useAuth();
   const isOpen = useRustWorkspace((s) => s.isPanelOpen);
   const title = useRustWorkspace((s) => s.panelTitle);
   const lessonVisible = useRustWorkspace((s) => s.lessonVisible);
@@ -70,7 +72,63 @@ export function RustWorkspacePanel() {
           <X size={16} />
         </Button>
       </div>
-      <RustIDE className="flex-1" />
+
+      {isLoading ? (
+        <div className="flex flex-1 flex-col items-center justify-center p-8 text-center">
+          <div className="h-8 w-8 rounded-full border-2 border-blue-500 border-t-transparent animate-spin mb-3" />
+          <p className="text-xs font-mono text-slate-500 dark:text-slate-400">
+            Verifying workspace access rights...
+          </p>
+        </div>
+      ) : !user ? (
+        <div className="flex flex-1 flex-col items-center justify-center p-6 sm:p-8 text-center">
+          <div className="relative mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-500/10 border border-blue-500/25 text-blue-600 dark:text-blue-400 shadow-md">
+            <Terminal size={26} />
+            <span className="absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full bg-blue-600 text-white shadow-md">
+              <Lock size={12} />
+            </span>
+          </div>
+
+          <div className="inline-flex items-center gap-1.5 rounded-full border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-[10px] font-mono font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400 mb-2.5">
+            <Sparkles size={11} />
+            <span>Authentication Required</span>
+          </div>
+
+          <h3 className="text-base sm:text-lg font-extrabold tracking-tight text-slate-900 dark:text-white">
+            Sign In to Access REEC Workspace
+          </h3>
+
+          <p className="mt-2 max-w-xs text-xs leading-relaxed text-slate-600 dark:text-slate-400">
+            To prevent system flooding and preserve compiler runner capacity, the interactive Rust workspace and execution tools require an authenticated engineer account.
+          </p>
+
+          <div className="mt-6 flex flex-col gap-2.5 w-full max-w-xs">
+            <Button
+              id="btn-panel-workspace-auth"
+              onClick={openAuthModal}
+              size="default"
+              className="w-full rounded-xl bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white font-bold text-xs py-2.5 shadow-md flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Lock size={13} />
+              <span>Sign In / Create Free Account</span>
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={closePanel}
+              className="w-full rounded-xl text-xs text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+            >
+              Close Panel
+            </Button>
+          </div>
+
+          <p className="mt-4 text-[10px] font-mono text-slate-400 dark:text-slate-500">
+            Instant access · Free account · Cloud synced
+          </p>
+        </div>
+      ) : (
+        <RustIDE className="flex-1" />
+      )}
     </aside>
   );
 }

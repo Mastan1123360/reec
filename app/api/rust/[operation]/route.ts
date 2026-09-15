@@ -12,6 +12,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 import { getRustBackend } from "@/lib/rust/playground-adapter";
 import { RustBackendException } from "@/lib/rust/errors";
 import type { RustEdition, RustOperation, RustProfile } from "@/lib/rust/types";
@@ -24,6 +25,7 @@ const VALID_EDITIONS: RustEdition[] = ["2015", "2018", "2021", "2024"];
 const MAX_SOURCE_CHARS = 40_000;
 
 const STATUS_BY_ERROR_KIND: Record<string, number> = {
+  unauthorized: 401,
   network_error: 502,
   timeout: 504,
   backend_error: 502,
@@ -33,6 +35,47 @@ const STATUS_BY_ERROR_KIND: Record<string, number> = {
 };
 
 export async function POST(req: NextRequest, { params }: { params: { operation: string } }) {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  // Gate execution behind explicit sign-in when Supabase is configured
+  // to prevent non-users from flooding compiler runners
+  if (supabaseUrl && supabaseAnonKey) {
+    const authHeader = req.headers.get("authorization");
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return NextResponse.json(
+        {
+          kind: "unauthorized",
+          message: "Authentication required. Please sign in to access the REEC code workspace and compile code.",
+        },
+        { status: 401 }
+      );
+    }
+
+    const token = authHeader.replace("Bearer ", "").trim();
+    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+    });
+
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser(token);
+
+    if (authError || !user) {
+      return NextResponse.json(
+        {
+          kind: "unauthorized",
+          message: "Session expired or invalid. Please sign in again to access the workspace.",
+        },
+        { status: 401 }
+      );
+    }
+  }
+
   const operation = params.operation as RustOperation;
   if (!VALID_OPERATIONS.includes(operation)) {
     return NextResponse.json({ error: `Unknown operation: ${params.operation}` }, { status: 404 });

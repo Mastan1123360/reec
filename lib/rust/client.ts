@@ -20,6 +20,7 @@ import type {
   RustOperation,
   RustProfile,
 } from "./types";
+import { getSupabaseClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 export type RustClientOutcome =
   | { ok: true; result: RustExecutionResult }
@@ -35,9 +36,25 @@ export async function runRustOperation(
   signal?: AbortSignal
 ): Promise<RustClientOutcome> {
   try {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+
+    if (isSupabaseConfigured()) {
+      try {
+        const client = getSupabaseClient();
+        if (client) {
+          const { data } = await client.auth.getSession();
+          if (data.session?.access_token) {
+            headers["authorization"] = `Bearer ${data.session.access_token}`;
+          }
+        }
+      } catch {
+        // Continue if auth session read encounters an exception
+      }
+    }
+
     const res = await fetch(`/api/rust/${operation}`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       signal,
       body: JSON.stringify({ source, edition, profile }),
     });

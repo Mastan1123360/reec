@@ -151,6 +151,7 @@ export interface RustExecutionResult {
 // ---------------------------------------------------------------------
 
 export type RustBackendErrorKind =
+  | "unauthorized"
   | "network_error"
   | "timeout"
   | "backend_error"
