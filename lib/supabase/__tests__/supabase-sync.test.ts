@@ -411,4 +411,133 @@ describe("Supabase Sync, Security & Migration Service", () => {
     expect(capturedUpsertPayload.completed_lessons).toHaveLength(5);
     expect(capturedUpsertPayload.completed_lessons).toContain("/phase-00/week-03/day-01");
   });
+
+  it("never unmarks lessons on re-sync when lessons are toggled off and back on (chronological activity log resolution)", async () => {
+    // 1. Reset progress store
+    useProgressStore.setState({
+      completedLessons: new Set<string>(),
+      completedBlocks: new Set<string>(),
+      bookmarks: new Set<string>(),
+      activityLog: [],
+    });
+
+    let capturedUpsertPayload: any = null;
+    const mockClient = {
+      from: vi.fn().mockImplementation((table: string) => {
+        if (table === "user_progress") {
+          return {
+            upsert: vi.fn().mockImplementation((payload: any) => {
+              capturedUpsertPayload = payload;
+              return Promise.resolve({ error: null });
+            }),
+            select: vi.fn().mockReturnValue({
+              eq: vi.fn().mockReturnValue({
+                maybeSingle: vi.fn().mockResolvedValue({
+                  data: {
+                    user_id: "user-toggle-resync",
+                    completed_lessons: [
+                      "/lesson/phase-00/week-01/day-01",
+                      "/lesson/phase-00/week-01/day-02",
+                    ],
+                    completed_blocks: [],
+                    bookmarks: [],
+                    notes: {},
+                    checklist: {},
+                    study_time_minutes: 30,
+                    daily_minutes: {},
+                    active_dates: [],
+                    last_visited: null,
+                    version: 1,
+                  },
+                  error: null,
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === "profiles") {
+          return {
+            upsert: vi.fn().mockResolvedValue({ error: null }),
+          };
+        }
+        if (table === "user_activity_logs") {
+          return {
+            select: vi.fn().mockReturnValue({
+              eq: vi.fn().mockReturnValue({
+                order: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue({ data: [], error: null }),
+                }),
+              }),
+            }),
+            upsert: vi.fn().mockResolvedValue({ error: null }),
+          };
+        }
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockResolvedValue({ data: [], error: null }),
+          }),
+        };
+      }),
+    };
+
+    vi.spyOn(clientModule, "getSupabaseClient").mockReturnValue(
+      mockClient as unknown as ReturnType<typeof clientModule.getSupabaseClient>
+    );
+
+    SupabaseSyncService.setCurrentUser("user-toggle-resync", "user2@example.com");
+
+    // 2. User marks Week 1, Week 2, Week 3 lessons
+    useProgressStore.getState().toggleLesson("/lesson/phase-00/week-01/day-01", "W1D1", 0);
+    useProgressStore.getState().toggleLesson("/lesson/phase-00/week-01/day-02", "W1D2", 0);
+    useProgressStore.getState().toggleLesson("/lesson/phase-00/week-02/day-01", "W2D1", 0);
+    useProgressStore.getState().toggleLesson("/lesson/phase-00/week-02/day-02", "W2D2", 0);
+    useProgressStore.getState().toggleLesson("/lesson/phase-00/week-03/day-01", "W3D1", 0);
+
+    // 3. User toggles W2D1 off then back on (simulating unmarking by accident then re-completing)
+    useProgressStore.getState().toggleLesson("/lesson/phase-00/week-02/day-01", "W2D1", 0); // unmarked
+    expect(useProgressStore.getState().completedLessons.has("/lesson/phase-00/week-02/day-01")).toBe(false);
+
+    useProgressStore.getState().toggleLesson("/lesson/phase-00/week-02/day-01", "W2D1", 0); // re-completed
+    expect(useProgressStore.getState().completedLessons.has("/lesson/phase-00/week-02/day-01")).toBe(true);
+
+    // Also manually inject an activity log scenario where an older unmark event is present
+    // along with non-lesson events (notes, etc.)
+    const existingLog = useProgressStore.getState().activityLog;
+    useProgressStore.setState({
+      activityLog: [
+        {
+          id: "act-new-note",
+          type: "note_saved",
+          title: "Saved note",
+          path: "/lesson/phase-00/week-02/day-01",
+          timestamp: Date.now() + 10,
+        },
+        ...existingLog,
+        {
+          id: "act-old-unmark",
+          type: "lesson_uncompleted",
+          title: "Old unmark",
+          path: "/lesson/phase-00/week-02/day-01",
+          timestamp: Date.now() - 50000,
+        },
+      ],
+    });
+
+    // 4. User triggers re-sync
+    const syncResult = await SupabaseSyncService.migrateAndHydrateUser("user-toggle-resync");
+    expect(syncResult).toBe(true);
+
+    // 5. Verify that W2D1 (and ALL marked lessons) REMAIN completed and NOT unmarked!
+    const localCompleted = useProgressStore.getState().completedLessons;
+    expect(localCompleted.has("/lesson/phase-00/week-01/day-01")).toBe(true);
+    expect(localCompleted.has("/lesson/phase-00/week-01/day-02")).toBe(true);
+    expect(localCompleted.has("/lesson/phase-00/week-02/day-01")).toBe(true);
+    expect(localCompleted.has("/lesson/phase-00/week-02/day-02")).toBe(true);
+    expect(localCompleted.has("/lesson/phase-00/week-03/day-01")).toBe(true);
+
+    // 6. Verify server upsert contains all 5 lessons including the toggled one
+    expect(capturedUpsertPayload).toBeDefined();
+    expect(capturedUpsertPayload.completed_lessons).toContain("/lesson/phase-00/week-02/day-01");
+    expect(capturedUpsertPayload.completed_lessons).toContain("/lesson/phase-00/week-03/day-01");
+  });
 });

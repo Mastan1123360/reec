@@ -48,38 +48,120 @@ function isSchemaCacheError(err: unknown): boolean {
 }
 
 /**
- * Scans activity history (most recent first) to find lessons that were explicitly uncompleted
- * without subsequent completion.
+ * Normalizes lesson/bookmark paths for consistent matching across legacy and new formats.
  */
-function getExplicitlyUncompletedPaths(activities: ActivityItem[]): Set<string> {
-  const seen = new Set<string>();
-  const uncompleted = new Set<string>();
-  for (const act of activities) {
-    if (act && act.path && !seen.has(act.path)) {
-      seen.add(act.path);
-      if (act.type === "lesson_uncompleted") {
-        uncompleted.add(act.path);
-      }
+function normalizeCurriculumPath(path: string): string {
+  if (!path) return "";
+  const clean = path.trim().toLowerCase().replace(/^\/+/, "/");
+  return clean.startsWith("/lesson/") ? clean.slice("/lesson".length) : clean;
+}
+
+/**
+ * Scans activity history to find lessons that were explicitly uncompleted
+ * and NOT subsequently completed. Resolves events chronologically by timestamp.
+ */
+function getExplicitlyUncompletedPaths(
+  activities: ActivityItem[],
+  currentLocalCompleted?: Set<string>
+): Set<string> {
+  if (!Array.isArray(activities) || activities.length === 0) {
+    return new Set<string>();
+  }
+
+  // Pre-normalize current local completed paths for fast lookup
+  const localCompletedNorm = new Set<string>();
+  if (currentLocalCompleted) {
+    for (const p of currentLocalCompleted) {
+      localCompletedNorm.add(p);
+      localCompletedNorm.add(normalizeCurriculumPath(p));
     }
   }
+
+  // Track the latest lesson event for each path based on highest timestamp
+  const latestEventByPath = new Map<string, { type: ActivityItem["type"]; timestamp: number }>();
+
+  for (const act of activities) {
+    if (!act || !act.path) continue;
+    if (act.type !== "lesson_completed" && act.type !== "lesson_uncompleted") continue;
+
+    const norm = normalizeCurriculumPath(act.path);
+    const ts = typeof act.timestamp === "number" ? act.timestamp : 0;
+    const existing = latestEventByPath.get(norm);
+
+    // If no existing event, or this event is strictly newer, or same timestamp but completed
+    if (
+      !existing ||
+      ts > existing.timestamp ||
+      (ts === existing.timestamp && act.type === "lesson_completed")
+    ) {
+      latestEventByPath.set(norm, { type: act.type, timestamp: ts });
+    }
+  }
+
+  const uncompleted = new Set<string>();
+  for (const [normPath, latest] of latestEventByPath.entries()) {
+    // A lesson is ONLY uncompleted if its latest event is "lesson_uncompleted"
+    // AND the local store does not currently have it marked as completed
+    if (latest.type === "lesson_uncompleted" && !localCompletedNorm.has(normPath)) {
+      uncompleted.add(normPath);
+      uncompleted.add(`/${normPath.replace(/^\/+/, "")}`);
+      uncompleted.add(`/lesson/${normPath.replace(/^\/+/, "")}`);
+    }
+  }
+
   return uncompleted;
 }
 
 /**
- * Scans activity history (most recent first) to find bookmarks that were explicitly removed
- * without subsequent re-adding.
+ * Scans activity history to find bookmarks that were explicitly removed
+ * and NOT subsequently re-added. Resolves events chronologically by timestamp.
  */
-function getExplicitlyRemovedBookmarks(activities: ActivityItem[]): Set<string> {
-  const seen = new Set<string>();
-  const removed = new Set<string>();
-  for (const act of activities) {
-    if (act && act.path && !seen.has(act.path)) {
-      seen.add(act.path);
-      if (act.type === "bookmark_removed") {
-        removed.add(act.path);
-      }
+function getExplicitlyRemovedBookmarks(
+  activities: ActivityItem[],
+  currentLocalBookmarks?: Set<string>
+): Set<string> {
+  if (!Array.isArray(activities) || activities.length === 0) {
+    return new Set<string>();
+  }
+
+  // Pre-normalize current local bookmarks for fast lookup
+  const localBookmarksNorm = new Set<string>();
+  if (currentLocalBookmarks) {
+    for (const p of currentLocalBookmarks) {
+      localBookmarksNorm.add(p);
+      localBookmarksNorm.add(normalizeCurriculumPath(p));
     }
   }
+
+  // Track the latest bookmark event for each path based on highest timestamp
+  const latestEventByPath = new Map<string, { type: ActivityItem["type"]; timestamp: number }>();
+
+  for (const act of activities) {
+    if (!act || !act.path) continue;
+    if (act.type !== "bookmark_added" && act.type !== "bookmark_removed") continue;
+
+    const norm = normalizeCurriculumPath(act.path);
+    const ts = typeof act.timestamp === "number" ? act.timestamp : 0;
+    const existing = latestEventByPath.get(norm);
+
+    if (
+      !existing ||
+      ts > existing.timestamp ||
+      (ts === existing.timestamp && act.type === "bookmark_added")
+    ) {
+      latestEventByPath.set(norm, { type: act.type, timestamp: ts });
+    }
+  }
+
+  const removed = new Set<string>();
+  for (const [normPath, latest] of latestEventByPath.entries()) {
+    if (latest.type === "bookmark_removed" && !localBookmarksNorm.has(normPath)) {
+      removed.add(normPath);
+      removed.add(`/${normPath.replace(/^\/+/, "")}`);
+      removed.add(`/lesson/${normPath.replace(/^\/+/, "")}`);
+    }
+  }
+
   return removed;
 }
 
@@ -328,15 +410,15 @@ class SupabaseSyncManager {
     const localNotes = useProgressStore.getState().notes || {};
     const localChecklist = useProgressStore.getState().checklist || {};
 
-    // Honor explicit local unmarks
+    // Honor explicit local unmarks, strictly protecting currently marked items
     const recentActivities = useProgressStore.getState().activityLog || [];
-    const explicitlyUncompleted = getExplicitlyUncompletedPaths(recentActivities);
-    const explicitlyUnbookmarked = getExplicitlyRemovedBookmarks(recentActivities);
+    const explicitlyUncompleted = getExplicitlyUncompletedPaths(recentActivities, localLessons);
+    const explicitlyUnbookmarked = getExplicitlyRemovedBookmarks(recentActivities, localBookmarks);
 
     // Merge completed lessons: union incoming with local, respecting recent unmarks
     const mergedLessons = new Set<string>();
     for (const path of incomingLessons) {
-      if (!explicitlyUncompleted.has(path)) {
+      if (!explicitlyUncompleted.has(path) && !explicitlyUncompleted.has(normalizeCurriculumPath(path))) {
         mergedLessons.add(path);
       }
     }
@@ -350,7 +432,7 @@ class SupabaseSyncManager {
     // Merge bookmarks
     const mergedBookmarks = new Set<string>();
     for (const path of incomingBookmarks) {
-      if (!explicitlyUnbookmarked.has(path)) {
+      if (!explicitlyUnbookmarked.has(path) && !explicitlyUnbookmarked.has(normalizeCurriculumPath(path))) {
         mergedBookmarks.add(path);
       }
     }
@@ -640,10 +722,13 @@ class SupabaseSyncManager {
     }
 
     this.setStatus("migrating");
+    if (!this.currentUserId) {
+      this.currentUserId = userId;
+    }
 
     // Flush any pending local progress changes to Supabase FIRST before fetching or setting isHydrating!
     // This ensures any newly marked/unmarked lessons in local store are pushed to Supabase and not lost.
-    await this.flushPendingProgressSync();
+    await this.flushPendingProgressSync(userId);
 
     this.isHydrating = true;
 
@@ -712,14 +797,14 @@ class SupabaseSyncManager {
         const serverLessonsList = (serverProgress?.completed_lessons as string[]) || [];
         const localLessonsSet = useProgressStore.getState().completedLessons;
 
-        // Honor any explicit unmarks from recent local activity
+        // Honor any explicit unmarks from recent local activity, strictly protecting currently marked items
         const recentActivities = useProgressStore.getState().activityLog || [];
-        const explicitlyUncompleted = getExplicitlyUncompletedPaths(recentActivities);
+        const explicitlyUncompleted = getExplicitlyUncompletedPaths(recentActivities, localLessonsSet);
 
         // Union server lessons with local lessons, preserving anything marked locally
         const mergedLessonsSet = new Set<string>();
         for (const path of serverLessonsList) {
-          if (!explicitlyUncompleted.has(path)) {
+          if (!explicitlyUncompleted.has(path) && !explicitlyUncompleted.has(normalizeCurriculumPath(path))) {
             mergedLessonsSet.add(path);
           }
         }
@@ -736,10 +821,10 @@ class SupabaseSyncManager {
         // Merge bookmarks
         const serverBookmarksList = (serverProgress?.bookmarks as string[]) || [];
         const localBookmarksSet = useProgressStore.getState().bookmarks;
-        const explicitlyUnbookmarked = getExplicitlyRemovedBookmarks(recentActivities);
+        const explicitlyUnbookmarked = getExplicitlyRemovedBookmarks(recentActivities, localBookmarksSet);
         const mergedBookmarksSet = new Set<string>();
         for (const path of serverBookmarksList) {
-          if (!explicitlyUnbookmarked.has(path)) {
+          if (!explicitlyUnbookmarked.has(path) && !explicitlyUnbookmarked.has(normalizeCurriculumPath(path))) {
             mergedBookmarksSet.add(path);
           }
         }
@@ -975,18 +1060,19 @@ class SupabaseSyncManager {
    * Immediately flushes any pending debounced progress updates to Supabase.
    * Cancels active debounce timer and executes upsert directly.
    */
-  public async flushPendingProgressSync(): Promise<void> {
+  public async flushPendingProgressSync(forcedUserId?: string): Promise<void> {
     if (this.progressDebounceTimer) {
       clearTimeout(this.progressDebounceTimer);
       this.progressDebounceTimer = null;
     }
 
-    if (!this.currentUserId || this.missingTables.has("user_progress")) return;
+    const userId = forcedUserId || this.currentUserId;
+    if (!userId || this.missingTables.has("user_progress")) return;
+    this.currentUserId = userId;
     const client = getSupabaseClient();
     if (!client) return;
 
     const state = useProgressStore.getState();
-    const userId = this.currentUserId;
     const currentRev = ++this.progressLocalRevision;
 
     try {
