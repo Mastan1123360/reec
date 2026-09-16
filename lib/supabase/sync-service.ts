@@ -34,15 +34,15 @@ function isSchemaCacheError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const anyErr = err as Record<string, unknown>;
   const code = String(anyErr.code || "");
-  const message = String(anyErr.message || "");
-  const details = String(anyErr.details || "");
+  const message = String(anyErr.message || "").toLowerCase();
+  const details = String(anyErr.details || "").toLowerCase();
   return (
     code === "PGRST205" ||
     code === "42P01" ||
     code === "PGRST200" ||
     message.includes("schema cache") ||
-    message.includes("Could not find the table") ||
-    message.includes("relation") ||
+    message.includes("could not find the table") ||
+    (message.includes("relation") && (message.includes("does not exist") || message.includes("not found"))) ||
     details.includes("schema cache")
   );
 }
@@ -188,6 +188,10 @@ class SupabaseSyncManager {
   private progressLocalRevision = 0;
   private lastSyncedProgressRevision = 0;
 
+  // Realtime echo loop prevention and in-flight hydration queue guard
+  private isApplyingCloudUpdate = false;
+  private hasPendingProgressSyncWhileHydrating = false;
+
   // In-flight hydration guard to prevent redundant background migrations
   private pendingHydrationUserId: string | null = null;
   private pendingHydrationTimer: { type: "idle" | "timeout"; handle: any } | null = null;
@@ -201,14 +205,18 @@ class SupabaseSyncManager {
     if (typeof window !== "undefined" && !this.visibilityListenerAttached) {
       this.visibilityListenerAttached = true;
       document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "visible" && this.currentUserId) {
+        if (document.visibilityState === "hidden") {
+          // Immediately flush debounced progress when user switches away or minimizes
+          this.flushPendingProgressSync().catch(() => {});
+        } else if (document.visibilityState === "visible" && this.currentUserId) {
           this.refreshUserProgressFromCloud(this.currentUserId).catch(() => {});
         }
       });
-      window.addEventListener("focus", () => {
-        if (this.currentUserId) {
-          this.refreshUserProgressFromCloud(this.currentUserId).catch(() => {});
-        }
+      window.addEventListener("pagehide", () => {
+        this.flushPendingProgressSync().catch(() => {});
+      });
+      window.addEventListener("beforeunload", () => {
+        this.flushPendingProgressSync().catch(() => {});
       });
     }
   }
@@ -259,6 +267,8 @@ class SupabaseSyncManager {
     }
     this.progressLocalRevision = 0;
     this.lastSyncedProgressRevision = 0;
+    this.isApplyingCloudUpdate = false;
+    this.hasPendingProgressSyncWhileHydrating = false;
     this.cancelPendingHydration();
     this.activeHydrationUserId = null;
   }
@@ -457,17 +467,24 @@ class SupabaseSyncManager {
     const activeDates = Array.from(new Set([...currentActiveDates, ...incomingActiveDates]));
     const lastVisited = (serverProgress.last_visited as string) || useProgressStore.getState().lastVisited || null;
 
-    useProgressStore.setState({
-      completedLessons: mergedLessons,
-      completedBlocks: mergedBlocks,
-      bookmarks: mergedBookmarks,
-      notes: { ...incomingNotes, ...localNotes },
-      checklist: { ...incomingChecklist, ...localChecklist },
-      studyTimeMinutes,
-      dailyMinutes,
-      activeDates,
-      lastVisited,
-    });
+    this.isApplyingCloudUpdate = true;
+    try {
+      useProgressStore.setState({
+        completedLessons: mergedLessons,
+        completedBlocks: mergedBlocks,
+        bookmarks: mergedBookmarks,
+        notes: { ...incomingNotes, ...localNotes },
+        checklist: { ...incomingChecklist, ...localChecklist },
+        studyTimeMinutes,
+        dailyMinutes,
+        activeDates,
+        lastVisited,
+      });
+    } finally {
+      setTimeout(() => {
+        this.isApplyingCloudUpdate = false;
+      }, 100);
+    }
   }
 
   /**
@@ -686,13 +703,13 @@ class SupabaseSyncManager {
    * Fetches latest user progress from cloud and hydrates local state
    */
   public async refreshUserProgressFromCloud(userId: string): Promise<void> {
-    if (!userId || this.missingTables.has("user_progress")) return;
+    if (!userId || this.missingTables.has("user_progress") || this.isHydrating) return;
     const client = getSupabaseClient();
     if (!client) return;
 
     // Flush any pending local changes first so the cloud has our latest state!
     if (this.progressDebounceTimer) {
-      await this.flushPendingProgressSync();
+      await this.flushPendingProgressSync(userId);
     }
 
     try {
@@ -782,16 +799,17 @@ class SupabaseSyncManager {
       let mergedLastVisited: string | null = null;
 
       if (isNewUser) {
-        // NEW USER: Reset all analytics and progress to zero
-        mergedLessons = [];
-        mergedBlocks = [];
-        mergedBookmarks = [];
-        mergedNotes = {};
-        mergedChecklist = {};
-        mergedDailyMinutes = {};
-        mergedActiveDates = [];
-        mergedStudyMinutes = 0;
-        mergedLastVisited = null;
+        // NEW USER (no existing server row): seed from local progress so user's work is never lost!
+        const local = useProgressStore.getState();
+        mergedLessons = Array.from(local.completedLessons);
+        mergedBlocks = Array.from(local.completedBlocks);
+        mergedBookmarks = Array.from(local.bookmarks);
+        mergedNotes = { ...local.notes };
+        mergedChecklist = { ...local.checklist };
+        mergedDailyMinutes = { ...local.dailyMinutes };
+        mergedActiveDates = [...local.activeDates];
+        mergedStudyMinutes = Math.round(Number(local.studyTimeMinutes) || 0);
+        mergedLastVisited = local.lastVisited;
       } else {
         // EXISTING USER: Perform robust bidirectional merge with local state
         const serverLessonsList = (serverProgress?.completed_lessons as string[]) || [];
@@ -855,7 +873,7 @@ class SupabaseSyncManager {
         mergedActiveDates = Array.from(new Set([...serverActiveDates, ...localActiveDates]));
 
         const localStudyMinutes = useProgressStore.getState().studyTimeMinutes || 0;
-        mergedStudyMinutes = Math.max(localStudyMinutes, (serverProgress?.study_time_minutes as number) || 0);
+        mergedStudyMinutes = Math.round(Math.max(localStudyMinutes, Number(serverProgress?.study_time_minutes) || 0));
         mergedLastVisited = (serverProgress?.last_visited as string) || useProgressStore.getState().lastVisited || null;
       }
 
@@ -869,7 +887,7 @@ class SupabaseSyncManager {
             bookmarks: mergedBookmarks,
             notes: mergedNotes,
             checklist: mergedChecklist,
-            study_time_minutes: mergedStudyMinutes,
+            study_time_minutes: Math.round(Number(mergedStudyMinutes) || 0),
             daily_minutes: mergedDailyMinutes,
             active_dates: mergedActiveDates,
             last_visited: mergedLastVisited,
@@ -884,17 +902,18 @@ class SupabaseSyncManager {
         }
       }
 
-      // Hydrate local Zustand progress store
+      // Hydrate local Zustand progress store without dropping any mutations made during hydration
+      const currentLatest = useProgressStore.getState();
       useProgressStore.setState({
-        completedLessons: new Set(mergedLessons),
-        completedBlocks: new Set(mergedBlocks),
-        bookmarks: new Set(mergedBookmarks),
-        notes: mergedNotes,
-        checklist: mergedChecklist,
-        studyTimeMinutes: mergedStudyMinutes,
-        dailyMinutes: mergedDailyMinutes,
-        activeDates: mergedActiveDates,
-        lastVisited: mergedLastVisited,
+        completedLessons: new Set([...mergedLessons, ...currentLatest.completedLessons]),
+        completedBlocks: new Set([...mergedBlocks, ...currentLatest.completedBlocks]),
+        bookmarks: new Set([...mergedBookmarks, ...currentLatest.bookmarks]),
+        notes: { ...mergedNotes, ...currentLatest.notes },
+        checklist: { ...mergedChecklist, ...currentLatest.checklist },
+        studyTimeMinutes: Math.max(mergedStudyMinutes, currentLatest.studyTimeMinutes || 0),
+        dailyMinutes: { ...mergedDailyMinutes, ...currentLatest.dailyMinutes },
+        activeDates: Array.from(new Set([...mergedActiveDates, ...(currentLatest.activeDates || [])])),
+        lastVisited: currentLatest.lastVisited || mergedLastVisited,
       });
 
       // 3. Sync User Activity Logs
@@ -1053,6 +1072,10 @@ class SupabaseSyncManager {
       return false;
     } finally {
       this.isHydrating = false;
+      if (this.hasPendingProgressSyncWhileHydrating) {
+        this.hasPendingProgressSyncWhileHydrating = false;
+        this.queueProgressSync();
+      }
     }
   }
 
@@ -1066,7 +1089,18 @@ class SupabaseSyncManager {
       this.progressDebounceTimer = null;
     }
 
-    const userId = forcedUserId || this.currentUserId;
+    let userId = forcedUserId || this.currentUserId;
+    if (!userId) {
+      const client = getSupabaseClient();
+      try {
+        const { data } = await client?.auth.getSession() ?? {};
+        if (data?.session?.user?.id) {
+          this.currentUserId = data.session.user.id;
+          userId = data.session.user.id;
+        }
+      } catch {}
+    }
+
     if (!userId || this.missingTables.has("user_progress")) return;
     this.currentUserId = userId;
     const client = getSupabaseClient();
@@ -1084,7 +1118,7 @@ class SupabaseSyncManager {
           bookmarks: Array.from(state.bookmarks),
           notes: state.notes,
           checklist: state.checklist,
-          study_time_minutes: state.studyTimeMinutes,
+          study_time_minutes: Math.round(Number(state.studyTimeMinutes) || 0),
           daily_minutes: state.dailyMinutes,
           active_dates: state.activeDates,
           last_visited: state.lastVisited,
@@ -1094,10 +1128,16 @@ class SupabaseSyncManager {
       );
       if (!error) {
         this.lastSyncedProgressRevision = currentRev;
-      } else if (isSchemaCacheError(error)) {
-        this.missingTables.add("user_progress");
+        this.setStatus("synced");
+      } else {
+        console.warn("[SupabaseSync] flushPendingProgressSync error:", error);
+        if (isSchemaCacheError(error)) {
+          this.missingTables.add("user_progress");
+        }
+        this.setStatus("error", error.message || "Progress flush failed");
       }
     } catch (err) {
+      console.warn("[SupabaseSync] flushPendingProgressSync exception:", err);
       if (isSchemaCacheError(err)) {
         this.missingTables.add("user_progress");
       }
@@ -1108,7 +1148,12 @@ class SupabaseSyncManager {
    * Debounced sync for Progress updates.
    */
   public queueProgressSync() {
-    if (this.isHydrating || !this.currentUserId || this.missingTables.has("user_progress")) return;
+    if (this.isApplyingCloudUpdate) return;
+    if (this.isHydrating) {
+      this.hasPendingProgressSyncWhileHydrating = true;
+      return;
+    }
+    if (this.missingTables.has("user_progress")) return;
     const client = getSupabaseClient();
     if (!client) return;
 
@@ -1122,14 +1167,25 @@ class SupabaseSyncManager {
       this.progressDebounceTimer = null;
       if (
         currentRev !== this.progressLocalRevision ||
-        !this.currentUserId ||
+        this.isApplyingCloudUpdate ||
         this.missingTables.has("user_progress")
       ) {
         return;
       }
 
+      let userId = this.currentUserId;
+      if (!userId) {
+        try {
+          const { data } = await client.auth.getSession();
+          if (data?.session?.user?.id) {
+            this.currentUserId = data.session.user.id;
+            userId = data.session.user.id;
+          }
+        } catch {}
+      }
+      if (!userId) return;
+
       const state = useProgressStore.getState();
-      const userId = this.currentUserId;
 
       try {
         const { error } = await client.from("user_progress").upsert(
@@ -1140,7 +1196,7 @@ class SupabaseSyncManager {
             bookmarks: Array.from(state.bookmarks),
             notes: state.notes,
             checklist: state.checklist,
-            study_time_minutes: state.studyTimeMinutes,
+            study_time_minutes: Math.round(Number(state.studyTimeMinutes) || 0),
             daily_minutes: state.dailyMinutes,
             active_dates: state.activeDates,
             last_visited: state.lastVisited,
@@ -1150,10 +1206,16 @@ class SupabaseSyncManager {
         );
         if (!error) {
           this.lastSyncedProgressRevision = currentRev;
-        } else if (isSchemaCacheError(error)) {
-          this.missingTables.add("user_progress");
+          this.setStatus("synced");
+        } else {
+          console.warn("[SupabaseSync] queueProgressSync error:", error);
+          if (isSchemaCacheError(error)) {
+            this.missingTables.add("user_progress");
+          }
+          this.setStatus("error", error.message || "Progress sync failed");
         }
       } catch (err) {
+        console.warn("[SupabaseSync] queueProgressSync exception:", err);
         if (isSchemaCacheError(err)) {
           this.missingTables.add("user_progress");
         }

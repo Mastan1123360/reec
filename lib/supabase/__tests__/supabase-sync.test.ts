@@ -540,4 +540,150 @@ describe("Supabase Sync, Security & Migration Service", () => {
     expect(capturedUpsertPayload.completed_lessons).toContain("/lesson/phase-00/week-02/day-01");
     expect(capturedUpsertPayload.completed_lessons).toContain("/lesson/phase-00/week-03/day-01");
   });
+
+  it("ensures study_time_minutes is strictly rounded to an integer during progress sync", async () => {
+    let capturedUpsert: any = null;
+    const mockClient = {
+      from: vi.fn((table: string) => {
+        if (table === "user_progress") {
+          return {
+            upsert: vi.fn(async (payload) => {
+              capturedUpsert = payload;
+              return { error: null };
+            }),
+          };
+        }
+        return {};
+      }),
+      auth: {
+        getSession: vi.fn(async () => ({
+          data: { session: { user: { id: "user-float-test" } } },
+        })),
+      },
+    };
+
+    vi.spyOn(clientModule, "getSupabaseClient").mockReturnValue(mockClient as any);
+    SupabaseSyncService.setCurrentUser("user-float-test");
+
+    // Inject fractional study time into store
+    useProgressStore.setState({
+      studyTimeMinutes: 14.852,
+      completedLessons: new Set(["/phase-00/week-01/day-01"]),
+    });
+
+    await SupabaseSyncService.flushPendingProgressSync("user-float-test");
+
+    expect(capturedUpsert).toBeDefined();
+    expect(capturedUpsert.study_time_minutes).toBe(15);
+    expect(Number.isInteger(capturedUpsert.study_time_minutes)).toBe(true);
+  });
+
+  it("does not falsely treat Postgres DML constraint errors with relation as missing table", async () => {
+    let upsertAttempts = 0;
+    const mockClient = {
+      from: vi.fn((table: string) => {
+        if (table === "user_progress") {
+          return {
+            upsert: vi.fn(async () => {
+              upsertAttempts++;
+              return {
+                error: {
+                  code: "23505",
+                  message: 'duplicate key value violates unique constraint "user_progress_user_id_key"',
+                  details: 'Key (user_id)=(123) already exists in relation "user_progress".',
+                },
+              };
+            }),
+          };
+        }
+        return {};
+      }),
+      auth: {
+        getSession: vi.fn(async () => ({
+          data: { session: { user: { id: "user-constraint-test" } } },
+        })),
+      },
+    };
+
+    vi.spyOn(clientModule, "getSupabaseClient").mockReturnValue(mockClient as any);
+    SupabaseSyncService.setCurrentUser("user-constraint-test");
+
+    await SupabaseSyncService.flushPendingProgressSync("user-constraint-test");
+
+    // Should NOT have blacklisted user_progress in missingTables
+    expect(SupabaseSyncService.isTableAvailable("user_progress")).toBe(true);
+
+    // Subsequent sync attempt is still permitted
+    await SupabaseSyncService.flushPendingProgressSync("user-constraint-test");
+    expect(upsertAttempts).toBe(2);
+  });
+
+  it("preserves local progress when new user signs up without pre-existing server row", async () => {
+    let capturedUpsertPayload: any = null;
+    const mockClient = {
+      from: vi.fn((table: string) => {
+        if (table === "profiles") {
+          return {
+            upsert: vi.fn(async () => ({ error: null })),
+          };
+        }
+        if (table === "user_progress") {
+          return {
+            select: vi.fn(() => ({
+              eq: vi.fn(() => ({
+                maybeSingle: vi.fn(async () => ({
+                  data: null, // Brand new user: no row in Supabase
+                  error: null,
+                })),
+              })),
+            })),
+            upsert: vi.fn(async (payload) => {
+              capturedUpsertPayload = payload;
+              return { error: null };
+            }),
+          };
+        }
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              order: vi.fn(() => ({
+                limit: vi.fn(async () => ({ data: [], error: null })),
+              })),
+            })),
+          })),
+          upsert: vi.fn(async () => ({ error: null })),
+        };
+      }),
+      auth: {
+        getSession: vi.fn(async () => ({
+          data: { session: { user: { id: "brand-new-user" } } },
+        })),
+      },
+    };
+
+    vi.spyOn(clientModule, "getSupabaseClient").mockReturnValue(mockClient as any);
+
+    // User already completed lessons locally before signing in / signing up
+    useProgressStore.setState({
+      completedLessons: new Set(["/phase-00/week-01/day-01", "/phase-00/week-01/day-02"]),
+      completedBlocks: new Set(["blk-1"]),
+      bookmarks: new Set(["/phase-00/week-01/day-01"]),
+      studyTimeMinutes: 25,
+    });
+
+    const success = await SupabaseSyncService.migrateAndHydrateUser("brand-new-user");
+    expect(success).toBe(true);
+
+    // Check that local state was NOT wiped
+    const localLessons = useProgressStore.getState().completedLessons;
+    expect(localLessons.has("/phase-00/week-01/day-01")).toBe(true);
+    expect(localLessons.has("/phase-00/week-01/day-02")).toBe(true);
+    expect(useProgressStore.getState().studyTimeMinutes).toBe(25);
+
+    // Check that Supabase received the local progress
+    expect(capturedUpsertPayload).toBeDefined();
+    expect(capturedUpsertPayload.completed_lessons).toContain("/phase-00/week-01/day-01");
+    expect(capturedUpsertPayload.completed_lessons).toContain("/phase-00/week-01/day-02");
+    expect(capturedUpsertPayload.study_time_minutes).toBe(25);
+  });
 });
